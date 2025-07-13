@@ -1,0 +1,10 @@
+export declare const systemPrompt: string;
+export declare const BackendSystemPrompt: string;
+export declare const pro: string;
+export declare const pro2: string;
+export declare const pro3: string;
+export declare const pro4: string;
+export declare const pro5: string;
+export declare const pro5Enhanced: string;
+export declare const pro5Enhanced2: string;
+export declare const pro5Enhanced3: string;
