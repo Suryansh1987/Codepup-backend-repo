@@ -330,7 +330,7 @@ export class ClaudeFunctionService {
         
         Create a simple file structure plan for a full-stack e-commerce application.
         
-        Just list what frontend and backend files need to be created and their purpose. No config files needed , and make a single seed file only named as seed.sql , make  backend code in a supabase folder the structure should be like all the migration files should be inside /supabase/migrations folder and  the seed files should be inside /supabase/seed.sql file. the frontend code files lucation should be relative to the src folder like ./src/pages/Home.tsx
+        Just list what frontend and backend files need to be created and their purpose. No config files needed . Also add the App.tsx  , and make a single seed file only named as seed.sql , make  backend code in a supabase folder the structure should be like all the migration files should be inside /supabase/migrations folder and  the seed files should be inside /supabase/seed.sql file. the frontend code files lucation should be relative to the src folder like ./src/pages/Home.tsx
         `;
 
     const message = await this.client.messages.create({
@@ -1106,7 +1106,7 @@ export class ClaudeFunctionService {
 
     const message = await this.client.messages.create({
       model: "claude-sonnet-4-0",
-      max_tokens: 20000,
+      max_tokens: 30000,
       temperature: 0.5,
       system: `You are the Frontend Generator Agent. Generate a complete React application that works with the provided backend.
   
@@ -1224,7 +1224,6 @@ export class ClaudeFunctionService {
                   },
                 },
                 required: [
-                  "tailwind.config.ts",
                   "src/App.tsx",
                   "src/pages/Home.tsx",
                   "src/pages/Login.tsx",
@@ -1238,7 +1237,6 @@ export class ClaudeFunctionService {
                   "src/lib/supabase.ts",
                   "src/index.css",
                   ".env",
-                  "package.json",
                 ],
               },
               componentsSummary: {
@@ -1251,7 +1249,10 @@ export class ClaudeFunctionService {
                       properties: {
                         name: { type: "string" },
                         purpose: { type: "string" },
-                        features: { type: "array", items: { type: "string" } },
+                        features: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
                       },
                     },
                   },
@@ -1273,7 +1274,10 @@ export class ClaudeFunctionService {
                       properties: {
                         name: { type: "string" },
                         purpose: { type: "string" },
-                        features: { type: "array", items: { type: "string" } },
+                        features: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
                       },
                     },
                   },

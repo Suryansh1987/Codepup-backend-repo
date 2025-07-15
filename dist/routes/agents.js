@@ -8,25 +8,83 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 // routes/agents.ts (FIXED VERSION)
 const express_1 = require("express");
 const claude_function_service_1 = require("../services/agents/claude-function-service");
 const conversation_service_1 = require("../services/conversation-service");
+const multer_1 = __importDefault(require("multer"));
 const router = (0, express_1.Router)();
 // Create an INSTANCE of the service (not static)
 const claudeService = new claude_function_service_1.ClaudeFunctionService();
 const conversationService = new conversation_service_1.ConversationService();
+const CLAUDE_VISION_LIMITS = {
+    maxImages: 20, // API limit: 20 images per request
+    maxFileSize: 3.75 * 1024 * 1024, // 3.75 MB per image
+    maxDimensions: 8000, // 8000x8000 pixels max
+    optimalSize: 1.15 * 1024 * 1024, // 1.15 megapixels for best performance
+    supportedFormats: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+};
+// Memory-only storage - no file persistence
+const upload = (0, multer_1.default)({
+    storage: multer_1.default.memoryStorage(),
+    limits: {
+        fileSize: CLAUDE_VISION_LIMITS.maxFileSize,
+        files: CLAUDE_VISION_LIMITS.maxImages,
+    },
+    //@ts-ignore
+    fileFilter: (req, file, cb) => {
+        if (CLAUDE_VISION_LIMITS.supportedFormats.includes(file.mimetype)) {
+            cb(null, true);
+        }
+        else {
+            cb(
+            //@ts-ignore
+            new Error(`Unsupported format. Use: ${CLAUDE_VISION_LIMITS.supportedFormats.join(", ")}`), false);
+        }
+    },
+});
+function validateAndOptimizeImage(buffer, filename) {
+    // Calculate estimated tokens (width * height / 750)
+    // For a 1000x1000 image: ~1334 tokens ≈ $4.00 per 1K images
+    const estimatedTokens = Math.ceil((buffer.length * 0.75) / 750); // Rough estimation
+    return {
+        isValid: buffer.length <= CLAUDE_VISION_LIMITS.maxFileSize,
+        estimatedTokens,
+        filename,
+    };
+}
 // Step 1: Initial design analysis
+router.post("/analyze", upload.array("images", CLAUDE_VISION_LIMITS.maxImages), 
 //@ts-ignore
-router.post("/analyze", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+(req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { prompt, userId, projectId } = req.body;
+        //@ts-ignore
+        const files = req.files;
         if (!prompt || !userId) {
-            return res.status(400).json({ error: "prompt and userId are required" });
+            return res
+                .status(400)
+                .json({ error: "prompt and userId are required" });
         }
         console.log(`🎨 Starting design analysis for user ${userId}`);
-        const result = yield claudeService.analyzeDesign(prompt, userId);
+        console.log(`📸 Processing ${(files === null || files === void 0 ? void 0 : files.length) || 0} images`);
+        // Process images without saving them
+        const imageData = (files === null || files === void 0 ? void 0 : files.map((file) => {
+            const validation = validateAndOptimizeImage(file.buffer, file.originalname);
+            return {
+                buffer: file.buffer,
+                mimetype: file.mimetype,
+                originalname: file.originalname,
+                size: file.size,
+                estimatedTokens: validation.estimatedTokens,
+            };
+        })) || [];
+        console.log(`🎨 Starting design analysis for user ${userId}`);
+        const result = yield claudeService.analyzeDesign(prompt, userId, imageData);
         if (result.success) {
             let conversation = yield conversationService.getConversationByProject(projectId);
             if (!conversation) {
@@ -369,6 +427,73 @@ router.get("/schema/:projectId", (req, res) => __awaiter(void 0, void 0, void 0,
     catch (error) {
         console.error("❌ Schema info error:", error);
         return res.status(500).json({ error: "Failed to get schema info" });
+    }
+}));
+//@ts-ignore
+router.post("/generate-frontend", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { projectId } = req.body;
+        if (!projectId) {
+            return res.status(400).json({ error: "projectId is required" });
+        }
+        const conversation = yield conversationService.getConversationByProject(projectId);
+        if (!conversation ||
+            !conversation.designChoices ||
+            !conversation.generatedFiles) {
+            return res.status(400).json({
+                error: "Missing design choices or file structure. Please complete previous steps first.",
+            });
+        }
+        console.log("strated to extract data ");
+        // Extract needed data
+        const designChoices = conversation.designChoices;
+        const generatedFiles = conversation.generatedFiles;
+        const fileStructure = generatedFiles.fileStructure;
+        const backendFiles = {
+            "supabase/migrations/001_initial_schema.sql": generatedFiles["supabase/migrations/001_initial_schema.sql"],
+            "supabase/seed.sql": generatedFiles["supabase/seed.sql"],
+            "src/types/index.ts": generatedFiles["src/types/index.ts"],
+        };
+        console.log(`🎨 Generating frontend for project ${projectId}`);
+        console.log(`📋 File structure available:`, !!fileStructure);
+        console.log(`🗄️ Backend files available:`, Object.keys(backendFiles).length);
+        const result = yield claudeService.generateFrontendFiles(designChoices, fileStructure, backendFiles, conversation.userId.toString());
+        if (result.success) {
+            // Merge with existing files
+            const allFiles = Object.assign(Object.assign({}, generatedFiles), result.functionInput.files);
+            yield conversationService.updateConversationByProject(projectId, {
+                currentStep: "frontend_completed",
+                generatedFiles: allFiles,
+            });
+            yield conversationService.saveMessageByProject(projectId, {
+                agentResponse: "Frontend application generated successfully!",
+                functionCalled: "generate_frontend_application",
+            });
+            return res.json({
+                success: true,
+                step: "frontend_completed",
+                files: result.functionInput.files,
+                componentsSummary: result.functionInput.componentsSummary,
+                technicalSpecs: result.functionInput.technicalSpecs,
+                usageInstructions: result.functionInput.usageInstructions,
+                newDependencies: result.functionInput.newDependencies || [],
+                message: "Complete frontend application generated!",
+                tokenused: result.tokenused,
+            });
+        }
+        else {
+            return res.status(500).json({
+                error: "Failed to generate frontend files",
+                details: result,
+            });
+        }
+    }
+    catch (error) {
+        console.error("❌ Frontend generation error:", error);
+        return res.status(500).json({
+            error: "Failed to generate frontend application",
+            details: error instanceof Error ? error.message : "Unknown error",
+        });
     }
 }));
 // Get all conversations for a user (across projects)

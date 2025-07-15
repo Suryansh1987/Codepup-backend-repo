@@ -33,6 +33,7 @@ const upload = multer({
       cb(null, true);
     } else {
       cb(
+        //@ts-ignore
         new Error(
           `Unsupported format. Use: ${CLAUDE_VISION_LIMITS.supportedFormats.join(
             ", "
@@ -556,7 +557,7 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
           "Missing design choices or file structure. Please complete previous steps first.",
       });
     }
-
+    console.log("strated to extract data ");
     // Extract needed data
     const designChoices = conversation.designChoices;
     const generatedFiles = conversation.generatedFiles as any;

@@ -55,6 +55,7 @@
     "@types/cors": "^2.8.18",
     "@types/diff": "^7.0.2",
     "@types/express": "^5.0.3",
+    "@types/multer": "^2.0.0",
     "@types/node": "^22.15.34",
     "@types/pg": "^8.15.4",
     "drizzle-kit": "^0.31.1",
