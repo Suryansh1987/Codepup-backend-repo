@@ -14,7 +14,6 @@ exports.DrizzleMessageHistoryDB = void 0;
 const neon_http_1 = require("drizzle-orm/neon-http");
 const serverless_1 = require("@neondatabase/serverless");
 const drizzle_orm_1 = require("drizzle-orm");
-// Import from simplified schema (4 tables only)
 const message_schema_1 = require("./message_schema");
 class DrizzleMessageHistoryDB {
     constructor(databaseUrl, anthropic) {
@@ -38,6 +37,70 @@ class DrizzleMessageHistoryDB {
             }
             catch (error) {
                 console.error(`Error getting user by Clerk ID ${clerkId}:`, error);
+                return null;
+            }
+        });
+    }
+    // Enhanced getProjectStructure function for messageDB
+    // This function now retrieves complete project data including structure, metadata, and generated code
+    getProjectStructure(projectId) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                // Get ALL project data in one query
+                const project = yield this.db
+                    .select()
+                    .from(message_schema_1.projects)
+                    .where((0, drizzle_orm_1.eq)(message_schema_1.projects.id, projectId))
+                    .limit(1);
+                if (project.length === 0) {
+                    console.log(`Project ${projectId} not found`);
+                    return null;
+                }
+                const projectData = project[0];
+                // Return the complete project data as JSON
+                // The analysis engine can then differentiate what it needs
+                return JSON.stringify(projectData);
+            }
+            catch (error) {
+                console.error(`Error getting project structure for project ${projectId}:`, error);
+                return null;
+            }
+        });
+    }
+    // Additional helper method for component-specific structure analysis
+    getProjectComponentStructure(projectId) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const structureJson = yield this.getProjectStructure(projectId);
+                if (!structureJson)
+                    return null;
+                const structure = JSON.parse(structureJson);
+                // Extract component-specific information
+                const componentStructure = {
+                    projectId: structure.id,
+                    framework: structure.framework,
+                    template: structure.template,
+                    hasDatabase: structure.metadata.structureAnalysis.hasDatabase,
+                    // Component analysis
+                    components: structure.metadata.structureAnalysis.componentHints.codeStructure || {},
+                    // File structure hints for intelligent modification
+                    fileStructure: {
+                        hasGeneratedCode: structure.metadata.structureAnalysis.hasGeneratedCode,
+                        lastModified: structure.updatedAt,
+                        deploymentUrl: structure.deploymentUrl,
+                        // Hints for file modifier
+                        modificationHints: {
+                            framework: structure.framework,
+                            template: structure.template,
+                            hasActiveConversation: structure.metadata.hasActiveConversation,
+                            lastActivity: structure.metadata.lastActivity
+                        }
+                    }
+                };
+                return componentStructure;
+            }
+            catch (error) {
+                console.error(`❌ Error getting component structure for project ${projectId}:`, error);
                 return null;
             }
         });

@@ -1,4 +1,4 @@
-// routes/modification.ts - Only essential routes
+// routes/modification.ts - Updated with messageDB integration and enhanced project structure
 import express, { Request, Response } from "express";
 import { StatelessIntelligentFileModifier } from "../services/filemodifier";
 import { StatelessSessionManager } from "./session";
@@ -20,7 +20,7 @@ import {
   resolveUserId, 
   getProjectSecrets, 
   resolveProjectByDeployedUrl
-} from "../utils/helper-functions";;
+} from "../utils/helper-functions";
 
 const router = express.Router();
 
@@ -93,7 +93,7 @@ export function initializeModificationRoutes(
 ): express.Router {
   const urlManager = new EnhancedProjectUrlManager(messageDB);
 
-  // ONLY ESSENTIAL ROUTE: Streaming modification
+  // ENHANCED STREAMING MODIFICATION ENDPOINT WITH PROJECT STRUCTURE
   router.post("/stream", async (req: Request, res: Response): Promise<void> => {
     const {
       prompt,
@@ -102,6 +102,8 @@ export function initializeModificationRoutes(
       currentUrl,
       deployedUrl,
       projectId: requestedProjectId,
+      projectStructure, // NEW: Accept project structure from frontend
+      clerkId, // NEW: Accept clerkId for user resolution
     } = req.body;
 
     if (!prompt) {
@@ -115,6 +117,11 @@ export function initializeModificationRoutes(
     const sessionId = clientSessionId || sessionManager.generateSessionId();
     const buildId = uuidv4();
 
+    console.log(`[${buildId}] 🚀 Starting modification with enhanced project structure support`);
+    console.log(`[${buildId}] RequestedProjectId: ${requestedProjectId}`);
+    console.log(`[${buildId}] Has projectStructure: ${!!projectStructure}`);
+    console.log(`[${buildId}] ClerkId: ${clerkId || 'not provided'}`);
+
     // Get project secrets
     const secrets = await getProjectSecrets(messageDB, requestedProjectId);
     if (!secrets) {
@@ -127,8 +134,20 @@ export function initializeModificationRoutes(
 
     let userId: number;
     try {
-      userId = await resolveUserId(messageDB, providedUserId, sessionId);
-      console.log(`[${buildId}] Resolved user ID: ${userId}`);
+      // Enhanced user resolution with Clerk ID support
+      if (clerkId) {
+        const userByClerk = await messageDB.getUserByClerkId(clerkId);
+        if (userByClerk) {
+          userId = userByClerk.id;
+          console.log(`[${buildId}] Resolved user by Clerk ID: ${userId}`);
+        } else {
+          userId = await resolveUserId(messageDB, providedUserId, sessionId);
+          console.log(`[${buildId}] Clerk user not found, using fallback: ${userId}`);
+        }
+      } else {
+        userId = await resolveUserId(messageDB, providedUserId, sessionId);
+        console.log(`[${buildId}] Resolved user ID: ${userId}`);
+      }
     } catch (error) {
       res.status(500).json({
         success: false,
@@ -161,13 +180,13 @@ export function initializeModificationRoutes(
       sendEvent("progress", {
         step: 1,
         total: 10,
-        message: "Initializing modification system...",
+        message: "Initializing enhanced modification system...",
         buildId,
         sessionId,
         userId,
       });
 
-      // Project resolution
+      // Project resolution with enhanced structure support
       const {
         projectId: resolvedProjectId,
         project: currentProject,
@@ -196,6 +215,7 @@ export function initializeModificationRoutes(
         sessionId,
         projectId: resolvedProjectId,
         projectName: currentProject?.name,
+        matchReason,
       });
 
       // Setup project environment
@@ -218,28 +238,36 @@ export function initializeModificationRoutes(
       sendEvent("progress", {
         step: 3,
         total: 10,
-        message: "Project environment ready!",
+        message: "Project environment ready! Preparing intelligent modification...",
         buildId,
         sessionId,
       });
 
-      // Initialize file modifier
-      const fileModifier = new StatelessIntelligentFileModifier(anthropic, tempBuildDir, sessionId);
+      // Initialize file modifier with enhanced project structure support
+      const fileModifier = new StatelessIntelligentFileModifier(
+        anthropic, 
+        tempBuildDir, 
+        sessionId, 
+        undefined, // conversation context (optional)
+        messageDB  // Pass messageDB for enhanced project structure access
+      );
+      
       const startTime = Date.now();
 
       sendEvent("progress", {
         step: 4,
         total: 10,
-        message: "Starting modification...",
+        message: "Starting intelligent modification with project structure analysis...",
         buildId,
         sessionId,
       });
 
-      // Process modification
+      // Enhanced processModification with project structure
       const result = await fileModifier.processModification(
         prompt,
-        undefined,
+        projectStructure, // Pass the project structure from frontend
         currentProject?.description || "Project modification",
+        resolvedProjectId || requestedProjectId, // Pass projectId for enhanced structure retrieval
         async () => null // No summary saving for simplicity
       );
 
@@ -247,7 +275,7 @@ export function initializeModificationRoutes(
         sendEvent("progress", {
           step: 5,
           total: 10,
-          message: "Modification complete! Building...",
+          message: "Modification complete! Building with enhanced structure...",
           buildId,
           sessionId,
         });
@@ -255,6 +283,13 @@ export function initializeModificationRoutes(
         try {
           // Write environment variables
           if (secrets?.aneonkey && secrets?.supabaseurl) {
+            sendEvent("progress", {
+              step: 5.5,
+              total: 10,
+              message: "Setting up environment variables...",
+              buildId,
+              sessionId,
+            });
             await writeEnvironmentVariables(tempBuildDir, secrets.aneonkey, secrets.supabaseurl);
           }
 
@@ -274,7 +309,7 @@ export function initializeModificationRoutes(
           sendEvent("progress", {
             step: 6,
             total: 10,
-            message: "Building app...",
+            message: "Building enhanced app...",
             buildId,
             sessionId,
           });
@@ -294,7 +329,7 @@ export function initializeModificationRoutes(
           sendEvent("progress", {
             step: 7,
             total: 10,
-            message: "Deploying...",
+            message: "Deploying enhanced project...",
             buildId,
             sessionId,
           });
@@ -305,7 +340,7 @@ export function initializeModificationRoutes(
           sendEvent("progress", {
             step: 8,
             total: 10,
-            message: "Updating project...",
+            message: "Updating project with enhanced structure...",
             buildId,
             sessionId,
           });
@@ -324,12 +359,13 @@ export function initializeModificationRoutes(
                 userId,
                 {
                   name: currentProject?.name,
+                  // Keep existing description - DON'T update during modification
                   description: currentProject?.description,
                   framework: currentProject?.framework || "react",
                   template: currentProject?.template || "vite-react-ts",
                 }
               );
-              console.log(`[${buildId}] ✅ Updated project ${resolvedProjectId}`);
+              console.log(`[${buildId}] ✅ Updated project ${resolvedProjectId} with enhanced structure (description preserved)`);
             } catch (updateError) {
               console.error(`[${buildId}] ❌ Failed to update project:`, updateError);
             }
@@ -349,15 +385,22 @@ export function initializeModificationRoutes(
           sendEvent("progress", {
             step: 10,
             total: 10,
-            message: `🎉 Live at: ${previewUrl}`,
+            message: `🎉 Enhanced project live at: ${previewUrl}`,
             buildId,
             sessionId,
           });
 
-          // Send completion event
+          // Send enhanced completion event
           sendEvent("complete", {
             success: true,
             data: {
+              workflow: "enhanced-modification-with-structure",
+              approach: result.approach || 'INTELLIGENT_ANALYSIS',
+              selectedFiles: result.selectedFiles || [],
+              addedFiles: result.addedFiles || [],
+              modifiedRanges: result.modifiedRanges || 0,
+              reasoning: result.reasoning,
+              modificationSummary: result.modificationSummary,
               previewUrl,
               downloadUrl: urls.downloadUrl,
               zipUrl,
@@ -366,6 +409,14 @@ export function initializeModificationRoutes(
               userId,
               projectId: resolvedProjectId,
               projectName: currentProject?.name,
+              projectMatchReason: matchReason,
+              hasProjectStructure: !!projectStructure,
+              enhancedFeatures: [
+                "Project structure analysis",
+                "Component-aware modifications",
+                "Intelligent file selection",
+                "Enhanced context understanding"
+              ]
             },
           });
 
@@ -378,6 +429,7 @@ export function initializeModificationRoutes(
           sendEvent("error", {
             success: false,
             error: "Build/deploy failed",
+            details: buildError instanceof Error ? buildError.message : "Unknown build error",
             buildId,
             sessionId,
             userId,
@@ -387,6 +439,8 @@ export function initializeModificationRoutes(
         sendEvent("error", {
           success: false,
           error: result.error || "Modification failed",
+          approach: result.approach,
+          reasoning: result.reasoning,
           buildId,
           sessionId,
           userId,
@@ -404,12 +458,70 @@ export function initializeModificationRoutes(
       sendEvent("error", {
         success: false,
         error: "Internal server error",
+        details: error.message,
         buildId,
         sessionId,
         userId,
       });
     } finally {
       res.end();
+    }
+  });
+
+  // NEW: Endpoint to verify URL-project mapping (from paste1.txt)
+  router.get("/verify-url/:userId", async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { userId: paramUserId } = req.params;
+      const { url, projectId } = req.query;
+      const userId = parseInt(paramUserId);
+
+      if (isNaN(userId) || !url) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid user ID or missing URL'
+        });
+        return;
+      }
+
+      const resolvedUserId = await resolveUserId(messageDB, userId);
+      
+      // Enhanced project resolution with structure info
+      const {
+        projectId: foundProjectId,
+        project: foundProject,
+        matchReason,
+      } = await resolveProjectByDeployedUrl(
+        messageDB,
+        resolvedUserId,
+        url as string,
+        undefined,
+        projectId ? parseInt(projectId as string) : undefined
+      );
+
+      res.json({
+        success: true,
+        data: {
+          hasMatch: !!foundProject,
+          project: foundProject ? {
+            id: foundProject.id,
+            name: foundProject.name,
+            description: foundProject.description,
+            deploymentUrl: foundProject.deploymentUrl,
+            framework: foundProject.framework,
+            template: foundProject.template,
+            hasStructure: !!foundProject.generatedCode,
+          } : null,
+          matchReason,
+          searchUrl: url as string,
+          providedProjectId: projectId || null,
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to verify URL-project mapping',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      });
     }
   });
 

@@ -28,7 +28,7 @@ const TargettedNodes_1 = require("./processor/TargettedNodes");
 const TokenTracer_1 = require("../utils/TokenTracer");
 const Redis_1 = require("./Redis");
 class EnhancedUnrestrictedIntelligentFileModifier {
-    constructor(anthropic, reactBasePath, sessionId, redisUrl) {
+    constructor(anthropic, reactBasePath, sessionId, redisUrl, messageDB) {
         console.log('[DEBUG] EnhancedUnrestrictedIntelligentFileModifier constructor starting...');
         console.log(`[DEBUG] reactBasePath: ${reactBasePath}`);
         this.anthropic = anthropic;
@@ -56,7 +56,7 @@ class EnhancedUnrestrictedIntelligentFileModifier {
         this.Textbasedprocessor = new text_modifier_1.EnhancedLLMRipgrepProcessor(reactBasePath, anthropic);
         // NEW: Initialize Two-Step Component Generation System (REPLACES componentGenerationSystem)
         console.log('[DEBUG] About to initialize TwoStepComponentGenerationSystem...');
-        this.twoStepSystem = new two_step_component_system_1.TwoStepComponentGenerationSystem(anthropic, reactBasePath);
+        this.twoStepSystem = new two_step_component_system_1.TwoStepComponentGenerationSystem(anthropic, reactBasePath, messageDB);
         console.log('[DEBUG] TwoStepComponentGenerationSystem initialized');
         console.log('[DEBUG] All processors initialized');
     }
@@ -311,7 +311,7 @@ ${recentChanges.map(change => {
     // ==============================================================
     // NEW: TWO-STEP COMPONENT ADDITION HANDLER (REPLACES old componentGenerationSystem)
     // ==============================================================
-    handleComponentAddition(prompt, scope, projectSummaryCallback) {
+    handleComponentAddition(prompt, scope, projectId, projectSummaryCallback) {
         return __awaiter(this, void 0, void 0, function* () {
             this.streamUpdate(`🚀 TWO-STEP WORKFLOW: Starting enhanced component generation...`);
             try {
@@ -319,7 +319,8 @@ ${recentChanges.map(change => {
                 const result = yield this.twoStepSystem.generateComponent(prompt, {
                     skipIntegration: false,
                     dryRun: false,
-                    verbose: true
+                    verbose: true,
+                    projectId: projectId
                 });
                 if (result.success) {
                     // Extract files from both steps
@@ -415,14 +416,14 @@ ${recentChanges.map(change => {
     // ==============================================================
     // NEW: ADDITIONAL TWO-STEP WORKFLOW METHODS
     // ==============================================================
-    generateComponentTwoStep(prompt, options) {
+    generateComponentTwoStep(prompt, options, projectId) {
         return __awaiter(this, void 0, void 0, function* () {
             this.streamUpdate('🚀 Direct Two-Step Generation Access...');
             try {
                 // Initialize session
                 yield this.initializeSession();
                 // Use the two-step system directly
-                const result = yield this.twoStepSystem.generateComponent(prompt, options);
+                const result = yield this.twoStepSystem.generateComponent(prompt, options, projectId);
                 // Update cache if successful
                 if (result.success) {
                     try {
@@ -665,7 +666,7 @@ ${recentChanges.map(change => {
     // ==============================================================
     // MAIN PROCESSING METHOD (enhanced with TWO-STEP support and better error handling)
     // ==============================================================
-    processModification(prompt, conversationContext, dbSummary, projectSummaryCallback) {
+    processModification(prompt, conversationContext, dbSummary, projectId, projectSummaryCallback) {
         return __awaiter(this, void 0, void 0, function* () {
             const startTime = Date.now();
             try {
@@ -799,7 +800,7 @@ ${recentChanges.map(change => {
                             this.streamUpdate('🚀 Executing two-step component addition...');
                             console.log('[DEBUG] About to call handleComponentAddition() with two-step workflow');
                             try {
-                                modificationResult = yield this.handleComponentAddition(prompt, scope, projectSummaryCallback);
+                                modificationResult = yield this.handleComponentAddition(prompt, scope, projectId);
                                 console.log(`[DEBUG] handleComponentAddition() completed with success: ${modificationResult.success}`);
                                 return modificationResult;
                             }
@@ -846,7 +847,7 @@ ${recentChanges.map(change => {
                             this.streamUpdate(`⚠️ Unknown scope: ${scope.scope}, attempting two-step component addition fallback...`);
                             console.log(`[DEBUG] Unknown scope: ${scope.scope}, using two-step fallback`);
                             try {
-                                modificationResult = yield this.handleComponentAddition(prompt, scope, projectSummaryCallback);
+                                modificationResult = yield this.handleComponentAddition(prompt, scope, projectId);
                                 console.log(`[DEBUG] Two-step fallback completed with success: ${modificationResult.success}`);
                                 return modificationResult;
                             }

@@ -1,4 +1,4 @@
-// routes/generation.ts - Simplified for 4-table schema
+// routes/generation.ts - Updated to store agent response structure in description
 import express, { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import AdmZip from "adm-zip";
@@ -30,27 +30,8 @@ interface FileData {
   content: string;
 }
 
-interface CreateProjectInput {
-  userId: number;
-  name: string;
-  description: string;
-  status: string;
-  projectType: string;
-  deploymentUrl: string;
-  downloadUrl: string;
-  zipUrl: string;
-  buildId: string;
-  lastSessionId: string;
-  framework: string;
-  template: string;
-  lastMessageAt: Date;
-  messageCount: number;
-  supabaseurl?: string;
-  aneonkey?: string;
-}
-
 interface StreamingProgressData {
-  type: "progress" | "length" | "chunk" | "complete" | "error";
+  type: "progress" | "length" | "chunk" | "complete" | "error" | "result";
   buildId: string;
   sessionId: string;
   totalLength?: number;
@@ -60,6 +41,7 @@ interface StreamingProgressData {
   phase?: "generating" | "parsing" | "processing" | "deploying" | "complete";
   message?: string;
   error?: string;
+  result?: any;
 }
 
 // Helper functions
@@ -95,103 +77,97 @@ export function initializeGenerationRoutes(
 ): express.Router {
   const urlManager = new EnhancedProjectUrlManager(messageDB);
 
-  // Streaming endpoint
- router.post("/stream", async (req: Request, res: Response): Promise<void> => {
-  const {
-    prompt,
-    projectId,
-    supabaseToken,
-    databaseUrl,
-    supabaseUrl,
-    supabaseAnonKey,
-    userId: providedUserId,
-    clerkId, // Add this to handle Clerk ID from frontend
-  } = req.body;
+  // Streaming endpoint with structure storage in description
+  router.post("/stream", async (req: Request, res: Response): Promise<void> => {
+    const {
+      prompt,
+      projectId,
+      supabaseToken,
+      databaseUrl,
+      supabaseUrl,
+      supabaseAnonKey,
+      userId: providedUserId,
+      clerkId,
+    } = req.body;
 
-  if (!prompt) {
-    res.status(400).json({
-      success: false,
-      error: "Prompt is required",
-    });
-    return;
-  }
-
-  const buildId = uuidv4();
-  const sessionId = sessionManager.generateSessionId();
-
-  // Set up Server-Sent Events
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Cache-Control",
-  });
-
-  sendStreamingUpdate(res, {
-    type: "progress",
-    buildId,
-    sessionId,
-    phase: "generating",
-    message: "Starting code generation...",
-    percentage: 0,
-  });
-
-  // UPDATED USER RESOLUTION - Use Clerk ID approach
-  let userId: number;
-  try {
-    if (clerkId) {
-      // Try to find user by Clerk ID first
-      const existingUser = await messageDB.getUserByClerkId(clerkId);
-      if (existingUser) {
-        userId = existingUser.id;
-        console.log(`[${buildId}] Found user by Clerk ID: ${userId}`);
-      } else {
-        // Create user with Clerk ID if provided but not found
-        console.log(`[${buildId}] Creating new user with Clerk ID: ${clerkId}`);
-        userId = await messageDB.createUserWithClerkId({
-          clerkId: clerkId,
-          email: `${clerkId}@clerk.dev`,
-          name: "User",
-        });
-        console.log(`[${buildId}] Created new user: ${userId}`);
-      }
-    } else if (providedUserId) {
-      // Fallback to old approach if no Clerk ID
-      const userExists = await messageDB.validateUserExists(providedUserId);
-      if (userExists) {
-        userId = providedUserId;
-        console.log(`[${buildId}] Using provided user ID: ${userId}`);
-      } else {
-        // Create user with provided ID
-        await messageDB.ensureUserExists(providedUserId);
-        userId = providedUserId;
-        console.log(`[${buildId}] Created user with ID: ${userId}`);
-      }
-    } else {
-      // Last resort - create a fallback user
-      const fallbackUserId = Date.now() % 1000000;
-      await messageDB.ensureUserExists(fallbackUserId);
-      userId = fallbackUserId;
-      console.log(`[${buildId}] Created fallback user: ${userId}`);
+    if (!prompt) {
+      res.status(400).json({
+        success: false,
+        error: "Prompt is required",
+      });
+      return;
     }
 
-    console.log(`[${buildId}] Resolved user ID: ${userId}`);
-  } catch (error) {
-    console.error(`[${buildId}] Failed to resolve user:`, error);
+    const buildId = uuidv4();
+    const sessionId = sessionManager.generateSessionId();
+
+    // Set up Server-Sent Events
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Cache-Control",
+    });
+
     sendStreamingUpdate(res, {
-      type: "error",
+      type: "progress",
       buildId,
       sessionId,
-      error: "Failed to resolve user for project generation",
+      phase: "generating",
+      message: "Starting code generation...",
+      percentage: 0,
     });
-    res.end();
-    return;
-  }
 
-  // Rest of your code remains the same...
-  console.log(`[${buildId}] Starting streaming generation for prompt: "${prompt.substring(0, 100)}..."`);
-  
+    // USER RESOLUTION with Clerk ID support
+    let userId: number;
+    try {
+      if (clerkId) {
+        const existingUser = await messageDB.getUserByClerkId(clerkId);
+        if (existingUser) {
+          userId = existingUser.id;
+          console.log(`[${buildId}] Found user by Clerk ID: ${userId}`);
+        } else {
+          console.log(`[${buildId}] Creating new user with Clerk ID: ${clerkId}`);
+          userId = await messageDB.createUserWithClerkId({
+            clerkId: clerkId,
+            email: `${clerkId}@clerk.dev`,
+            name: "User",
+          });
+          console.log(`[${buildId}] Created new user: ${userId}`);
+        }
+      } else if (providedUserId) {
+        const userExists = await messageDB.validateUserExists(providedUserId);
+        if (userExists) {
+          userId = providedUserId;
+          console.log(`[${buildId}] Using provided user ID: ${userId}`);
+        } else {
+          await messageDB.ensureUserExists(providedUserId);
+          userId = providedUserId;
+          console.log(`[${buildId}] Created user with ID: ${userId}`);
+        }
+      } else {
+        const fallbackUserId = Date.now() % 1000000;
+        await messageDB.ensureUserExists(fallbackUserId);
+        userId = fallbackUserId;
+        console.log(`[${buildId}] Created fallback user: ${userId}`);
+      }
+
+      console.log(`[${buildId}] Resolved user ID: ${userId}`);
+    } catch (error) {
+      console.error(`[${buildId}] Failed to resolve user:`, error);
+      sendStreamingUpdate(res, {
+        type: "error",
+        buildId,
+        sessionId,
+        error: "Failed to resolve user for project generation",
+      });
+      res.end();
+      return;
+    }
+
+    console.log(`[${buildId}] Starting streaming generation for prompt: "${prompt.substring(0, 100)}..."`);
+    
     const sourceTemplateDir = path.join(__dirname, "../../react-base");
     const tempBuildDir = path.join(__dirname, "../../temp-builds", buildId);
     let finalProjectId: number = projectId || 0;
@@ -229,7 +205,7 @@ export function initializeGenerationRoutes(
         try {
           await messageDB.updateProject(projectId, {
             name: `Updated Project ${buildId.substring(0, 8)}`,
-            description: `Updated: ${prompt.substring(0, 100)}...`,
+            // DON'T update description during regeneration - it contains the original structure
             status: "regenerating",
             buildId: buildId,
             lastSessionId: sessionId,
@@ -242,17 +218,17 @@ export function initializeGenerationRoutes(
           });
           finalProjectId = projectId;
           projectSaved = true;
-          console.log(`[${buildId}] ✅ Updated existing project record: ${finalProjectId}`);
+          console.log(`[${buildId}] ✅ Updated existing project record: ${finalProjectId} (description preserved)`);
         } catch (updateError) {
           console.error(`[${buildId}] ❌ Failed to update existing project:`, updateError);
         }
       } else {
-        console.log(`[${buildId}] 💾 Creating new project record...`);
+        console.log(`[${buildId}] 💾 Creating new project record (will update description with structure)...`);
         try {
           finalProjectId = await messageDB.createProject({
             userId,
             name: `Generated Project ${buildId.substring(0, 8)}`,
-            description: `React project generated from prompt: ${prompt.substring(0, 100)}...`,
+            description: `React project generated from prompt: ${prompt.substring(0, 100)}...`, // Temporary description
             status: "generating",
             projectType: "generated",
             deploymentUrl: "",
@@ -470,6 +446,30 @@ export function initializeGenerationRoutes(
         structure: parsedResult.structure,
       });
 
+      // Create enhanced project structure for description
+      const structureForDescription = JSON.stringify({
+        structure: parsedResult.structure,
+        summary: projectSummary,
+        validation: {
+          fileStructure: validationResult.isValid,
+          supabase: supabaseValidation.isValid,
+          tailwind: tailwindConfig ? validateTailwindConfig(tailwindConfig.content) : false,
+        },
+        supabaseInfo: {
+          filesFound: supabaseFiles.allSupabaseFiles.length,
+          hasConfig: !!supabaseFiles.configFile,
+          migrationCount: supabaseFiles.migrationFiles.length,
+          hasSeedFile: !!supabaseFiles.seedFile,
+        },
+        metadata: {
+          buildId: buildId,
+          filesGenerated: parsedFiles.length,
+          generatedAt: new Date().toISOString(),
+          framework: "react",
+          template: "vite-react-ts"
+        }
+      });
+
       // Update session context
       await sessionManager.updateSessionContext(sessionId, {
         projectSummary: {
@@ -525,18 +525,10 @@ export function initializeGenerationRoutes(
         percentage: 100,
       });
 
-      // Save assistant response to message history
+      // Save assistant response to message history with structure
       try {
         const assistantMessageId = await messageDB.addMessage(
-          JSON.stringify({
-            structure: parsedResult.structure,
-            summary: projectSummary,
-            validation: {
-              fileStructure: validationResult.isValid,
-              supabase: supabaseValidation.isValid,
-              tailwind: tailwindConfig ? validateTailwindConfig(tailwindConfig.content) : false,
-            },
-          }),
+          structureForDescription, // Store the enhanced structure as message content
           "assistant",
           {
             projectId: finalProjectId,
@@ -549,9 +541,24 @@ export function initializeGenerationRoutes(
             zipUrl: zipUrl,
           }
         );
-        console.log(`[${buildId}] 💾 Saved enhanced summary to messageDB (ID: ${assistantMessageId})`);
+        console.log(`[${buildId}] 💾 Saved enhanced structure to messageDB (ID: ${assistantMessageId})`);
       } catch (dbError) {
-        console.warn(`[${buildId}] ⚠️ Failed to save summary to messageDB:`, dbError);
+        console.warn(`[${buildId}] ⚠️ Failed to save structure to messageDB:`, dbError);
+      }
+
+      // CRITICAL: Update project description with agent response structure (for new projects only)
+      if (finalProjectId && projectSaved && !projectId) {
+        try {
+          console.log(`[${buildId}] 📝 Updating project description with agent response structure...`);
+          await messageDB.updateProject(finalProjectId, {
+            description: structureForDescription, // Store the structure in description
+            generatedCode: parsedResult.structure, // Also store in generatedCode field
+            status: "ready", // Update status to ready after successful generation
+          });
+          console.log(`[${buildId}] ✅ Project description updated with structure data`);
+        } catch (descriptionError) {
+          console.error(`[${buildId}] ❌ Failed to update project description:`, descriptionError);
+        }
       }
 
       // Update project URLs using Enhanced URL Manager
@@ -569,7 +576,9 @@ export function initializeGenerationRoutes(
             userId,
             {
               name: `Generated Project ${buildId.substring(0, 8)}`,
-              description: `React project with enhanced validation`,
+              // For new projects, the description will be the structure
+              // For existing projects, keep the original description with structure
+              description: !projectId ? structureForDescription : undefined, // Only update for new projects
               framework: "react",
               template: "vite-react-ts",
             }
@@ -627,6 +636,7 @@ export function initializeGenerationRoutes(
           totalCharacters: totalLength,
           chunksStreamed: Math.floor(totalLength / CHUNK_SIZE),
         },
+        structureStoredInDescription: !projectId, // Indicates if structure was stored in description
       };
 
       res.write(

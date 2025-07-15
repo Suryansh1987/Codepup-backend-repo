@@ -5,6 +5,8 @@ export declare class DrizzleMessageHistoryDB {
     private anthropic;
     constructor(databaseUrl: string, anthropic: Anthropic);
     getUserByClerkId(clerkId: string): Promise<User | null>;
+    getProjectStructure(projectId: number): Promise<string | null>;
+    getProjectComponentStructure(projectId: number): Promise<any | null>;
     createUserWithClerkId(userData: {
         clerkId: string;
         email: string;
