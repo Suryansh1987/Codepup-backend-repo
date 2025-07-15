@@ -15,9 +15,6 @@ class RedisModificationSummary {
         this.redis = redis;
         this.sessionId = sessionId;
     }
-    /**
-     * Add a new modification change to the tracking
-     */
     addChange(type, file, description, options) {
         return __awaiter(this, void 0, void 0, function* () {
             const change = {

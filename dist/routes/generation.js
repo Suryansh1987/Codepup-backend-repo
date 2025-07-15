@@ -46,6 +46,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.initializeGenerationRoutes = initializeGenerationRoutes;
+// routes/generation.ts - Simplified for 4-table schema
 const express_1 = __importDefault(require("express"));
 const uuid_1 = require("uuid");
 const adm_zip_1 = __importDefault(require("adm-zip"));
@@ -56,7 +57,7 @@ const url_manager_1 = require("../db/url-manager");
 const newparser_1 = require("../utils/newparser");
 const promt_1 = require("../defaults/promt");
 const router = express_1.default.Router();
-// FIXED: Better cleanup with proper error handling and timing
+// Helper functions
 function cleanupTempDirectory(buildId) {
     return __awaiter(this, void 0, void 0, function* () {
         const tempBuildDir = path_1.default.join(__dirname, "../../temp-builds", buildId);
@@ -65,69 +66,29 @@ function cleanupTempDirectory(buildId) {
                 yield fs.promises.rm(tempBuildDir, { recursive: true, force: true });
                 console.log(`[${buildId}] 🧹 Temp directory cleaned up`);
             }
-            else {
-                console.log(`[${buildId}] 🧹 Temp directory already cleaned or doesn't exist`);
-            }
         }
         catch (error) {
             console.warn(`[${buildId}] ⚠️ Failed to cleanup temp directory:`, error);
         }
     });
 }
-// ADD THIS ENTIRE FUNCTION
-function resolveUserId(messageDB, providedUserId, sessionId) {
-    return __awaiter(this, void 0, void 0, function* () {
-        try {
-            // Priority 1: Use provided userId if valid
-            if (providedUserId &&
-                (yield messageDB.validateUserExists(providedUserId))) {
-                return providedUserId;
-            }
-            // Priority 2: Get userId from session's most recent project
-            if (sessionId) {
-                const sessionProject = yield messageDB.getProjectBySessionId(sessionId);
-                if (sessionProject && sessionProject.userId) {
-                    return sessionProject.userId;
-                }
-            }
-            // Priority 3: Get most recent user from any project
-            const mostRecentUserId = yield messageDB.getMostRecentUserId();
-            if (mostRecentUserId &&
-                (yield messageDB.validateUserExists(mostRecentUserId))) {
-                return mostRecentUserId;
-            }
-            // Priority 4: Create a new user with current timestamp
-            const newUserId = Date.now() % 1000000;
-            yield messageDB.ensureUserExists(newUserId, {
-                email: `user${newUserId}@buildora.dev`,
-                name: `User ${newUserId}`,
-            });
-            console.log(`✅ Created new user ${newUserId} as fallback`);
-            return newUserId;
-        }
-        catch (error) {
-            console.error("❌ Failed to resolve user ID:", error);
-            throw new Error("Could not resolve or create user");
-        }
-    });
-}
 function scheduleCleanup(buildId, delayInHours = 1) {
-    const delayMs = delayInHours * 60 * 60 * 1000; // Convert hours to milliseconds
+    const delayMs = delayInHours * 60 * 60 * 1000;
     setTimeout(() => __awaiter(this, void 0, void 0, function* () {
         console.log(`[${buildId}] 🕐 Scheduled cleanup starting after ${delayInHours} hour(s)`);
         yield cleanupTempDirectory(buildId);
     }), delayMs);
     console.log(`[${buildId}] ⏰ Cleanup scheduled for ${delayInHours} hour(s) from now`);
 }
-// NEW: Helper function to send streaming updates
 function sendStreamingUpdate(res, data) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
     const urlManager = new url_manager_1.EnhancedProjectUrlManager(messageDB);
-    // NEW: Streaming endpoint
+    // Streaming endpoint
     router.post("/stream", (req, res) => __awaiter(this, void 0, void 0, function* () {
-        const { prompt, projectId, supabaseToken, databaseUrl, supabaseUrl, supabaseAnonKey, userId: providedUserId, } = req.body;
+        const { prompt, projectId, supabaseToken, databaseUrl, supabaseUrl, supabaseAnonKey, userId: providedUserId, clerkId, // Add this to handle Clerk ID from frontend
+         } = req.body;
         if (!prompt) {
             res.status(400).json({
                 success: false,
@@ -145,7 +106,6 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Cache-Control",
         });
-        // Send initial progress
         sendStreamingUpdate(res, {
             type: "progress",
             buildId,
@@ -154,12 +114,52 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
             message: "Starting code generation...",
             percentage: 0,
         });
+        // UPDATED USER RESOLUTION - Use Clerk ID approach
         let userId;
         try {
-            userId = yield resolveUserId(messageDB, providedUserId, sessionId);
-            console.log(`[${buildId}] Resolved user ID: ${userId} (provided: ${providedUserId})`);
+            if (clerkId) {
+                // Try to find user by Clerk ID first
+                const existingUser = yield messageDB.getUserByClerkId(clerkId);
+                if (existingUser) {
+                    userId = existingUser.id;
+                    console.log(`[${buildId}] Found user by Clerk ID: ${userId}`);
+                }
+                else {
+                    // Create user with Clerk ID if provided but not found
+                    console.log(`[${buildId}] Creating new user with Clerk ID: ${clerkId}`);
+                    userId = yield messageDB.createUserWithClerkId({
+                        clerkId: clerkId,
+                        email: `${clerkId}@clerk.dev`,
+                        name: "User",
+                    });
+                    console.log(`[${buildId}] Created new user: ${userId}`);
+                }
+            }
+            else if (providedUserId) {
+                // Fallback to old approach if no Clerk ID
+                const userExists = yield messageDB.validateUserExists(providedUserId);
+                if (userExists) {
+                    userId = providedUserId;
+                    console.log(`[${buildId}] Using provided user ID: ${userId}`);
+                }
+                else {
+                    // Create user with provided ID
+                    yield messageDB.ensureUserExists(providedUserId);
+                    userId = providedUserId;
+                    console.log(`[${buildId}] Created user with ID: ${userId}`);
+                }
+            }
+            else {
+                // Last resort - create a fallback user
+                const fallbackUserId = Date.now() % 1000000;
+                yield messageDB.ensureUserExists(fallbackUserId);
+                userId = fallbackUserId;
+                console.log(`[${buildId}] Created fallback user: ${userId}`);
+            }
+            console.log(`[${buildId}] Resolved user ID: ${userId}`);
         }
         catch (error) {
+            console.error(`[${buildId}] Failed to resolve user:`, error);
             sendStreamingUpdate(res, {
                 type: "error",
                 buildId,
@@ -169,6 +169,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
             res.end();
             return;
         }
+        // Rest of your code remains the same...
         console.log(`[${buildId}] Starting streaming generation for prompt: "${prompt.substring(0, 100)}..."`);
         const sourceTemplateDir = path_1.default.join(__dirname, "../../react-base");
         const tempBuildDir = path_1.default.join(__dirname, "../../temp-builds", buildId);
@@ -176,7 +177,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
         let projectSaved = false;
         let accumulatedResponse = "";
         let totalLength = 0;
-        const CHUNK_SIZE = 10000; // 10k characters
+        const CHUNK_SIZE = 10000;
         try {
             // Save initial session context
             yield sessionManager.saveSessionContext(sessionId, {
@@ -184,11 +185,9 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 tempBuildDir: "",
                 lastActivity: Date.now(),
             });
-            // 1. Setup temp directory
+            // Setup temp directory
             yield fs.promises.mkdir(tempBuildDir, { recursive: true });
-            yield fs.promises.cp(sourceTemplateDir, tempBuildDir, {
-                recursive: true,
-            });
+            yield fs.promises.cp(sourceTemplateDir, tempBuildDir, { recursive: true });
             sendStreamingUpdate(res, {
                 type: "progress",
                 buildId,
@@ -197,12 +196,8 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 message: "Temp directory created, starting Claude generation...",
                 percentage: 5,
             });
-            // Update session with temp directory
             yield sessionManager.updateSessionContext(sessionId, { tempBuildDir });
-            // CREATE OR UPDATE PROJECT RECORD
-            // UPDATE PROJECT RECORD section (around line 135-150)
-            // CREATE OR UPDATE PROJECT RECORD section - Replace your existing code with this:
-            // UPDATE PROJECT RECORD section - Use the correct field names from your schema:
+            // Create or update project record
             if (projectId) {
                 console.log(`[${buildId}] 🔄 Updating existing project ${projectId}...`);
                 try {
@@ -216,9 +211,8 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                         template: "vite-react-ts",
                         lastMessageAt: new Date(),
                         updatedAt: new Date(),
-                        // USE THE CORRECT FIELD NAMES FROM YOUR SCHEMA:
-                        supabaseurl: supabaseUrl, // Note: lowercase 'url'
-                        aneonkey: supabaseAnonKey, // Note: 'aneonkey' not 'supabaseAnonKey'
+                        supabaseurl: supabaseUrl,
+                        aneonkey: supabaseAnonKey,
                     });
                     finalProjectId = projectId;
                     projectSaved = true;
@@ -246,9 +240,8 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                         template: "vite-react-ts",
                         lastMessageAt: new Date(),
                         messageCount: 0,
-                        // USE THE CORRECT FIELD NAMES FROM YOUR SCHEMA:
-                        supabaseurl: supabaseUrl, // Note: lowercase 'url'
-                        aneonkey: supabaseAnonKey, // Note: 'aneonkey' not 'supabaseAnonKey'
+                        supabaseurl: supabaseUrl,
+                        aneonkey: supabaseAnonKey,
                     });
                     projectSaved = true;
                     console.log(`[${buildId}] ✅ Created new project record: ${finalProjectId}`);
@@ -266,7 +259,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 percentage: 10,
             });
             console.log(`[${buildId}] 🚀 Generating frontend code with streaming...`);
-            // NEW: Stream with length tracking
+            // Generate code with streaming
             const frontendResult = yield anthropic.messages
                 .stream({
                 model: "claude-sonnet-4-0",
@@ -283,15 +276,13 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 .on("text", (text) => {
                 accumulatedResponse += text;
                 totalLength += text.length;
-                // Send length update
                 sendStreamingUpdate(res, {
                     type: "length",
                     buildId,
                     sessionId,
                     currentLength: totalLength,
-                    percentage: Math.min(10 + (totalLength / 50000) * 60, 70), // 10-70% for generation
+                    percentage: Math.min(10 + (totalLength / 50000) * 60, 70),
                 });
-                // Send chunk update every 10k characters
                 if (totalLength > 0 && totalLength % CHUNK_SIZE === 0) {
                     const chunkStart = totalLength - CHUNK_SIZE;
                     const chunk = accumulatedResponse.substring(chunkStart, totalLength);
@@ -318,10 +309,10 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 totalLength: totalLength,
             });
             console.log(`[${buildId}] ✅ Code generation completed with ${totalLength} characters`);
-            // 3. Parse generated files with enhanced parser
+            // Parse generated files
             let parsedResult;
             try {
-                console.log(`[${buildId}] 📝 Parsing generated code with enhanced parser...`);
+                console.log(`[${buildId}] 📝 Parsing generated code...`);
                 parsedResult = (0, newparser_1.parseFrontendCode)(claudeResponse);
                 console.log(`[${buildId}] ✅ Code parsing successful`);
                 console.log(`[${buildId}] 📊 Parsed ${parsedResult.codeFiles.length} files`);
@@ -345,7 +336,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 res.end();
                 return;
             }
-            // 4. Process files with enhanced validation
+            // Process files
             console.log(`[${buildId}] 🔧 Processing files with enhanced validation...`);
             const processedProject = (0, newparser_1.processTailwindProject)(parsedResult.codeFiles);
             const { processedFiles, validationResult, supabaseValidation, tailwindConfig, supabaseFiles, } = processedProject;
@@ -357,7 +348,6 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 message: `Validation complete. Writing ${processedFiles.length} files to disk...`,
                 percentage: 80,
             });
-            // Use processed files instead of original parsed files
             const parsedFiles = processedFiles;
             if (!parsedFiles || parsedFiles.length === 0) {
                 sendStreamingUpdate(res, {
@@ -371,7 +361,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
             }
             console.log(`[${buildId}] 💾 Writing ${parsedFiles.length} files...`);
             const fileMap = {};
-            // Write files with error handling
+            // Write files
             for (const file of parsedFiles) {
                 try {
                     const fullPath = path_1.default.join(tempBuildDir, file.path);
@@ -392,7 +382,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                     return;
                 }
             }
-            // Cache all files in session
+            // Cache files in session
             yield sessionManager.cacheProjectFiles(sessionId, fileMap);
             sendStreamingUpdate(res, {
                 type: "progress",
@@ -402,7 +392,6 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 message: "Files written. Creating zip and starting deployment...",
                 percentage: 85,
             });
-            // Wait for file operations
             yield new Promise((resolve) => setTimeout(resolve, 2000));
             console.log(`[${buildId}] 📦 Creating zip and uploading to Azure...`);
             const zip = new adm_zip_1.default();
@@ -418,12 +407,12 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 message: "Source uploaded. Building and deploying...",
                 percentage: 90,
             });
-            // Generate comprehensive project summary
+            // Generate project summary
             const projectSummary = (0, newparser_1.generateProjectSummary)({
                 codeFiles: processedFiles,
                 structure: parsedResult.structure,
             });
-            // Update session context with enhanced project summary
+            // Update session context
             yield sessionManager.updateSessionContext(sessionId, {
                 projectSummary: {
                     structure: parsedResult.structure,
@@ -431,9 +420,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                     validation: {
                         fileStructure: validationResult,
                         supabase: supabaseValidation,
-                        tailwind: tailwindConfig
-                            ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content)
-                            : false,
+                        tailwind: tailwindConfig ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content) : false,
                     },
                     supabaseInfo: {
                         filesFound: supabaseFiles.allSupabaseFiles.length,
@@ -446,7 +433,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                     filesGenerated: parsedFiles.length,
                 },
             });
-            // 6. Trigger Azure Container Job
+            // Trigger Azure Container Job
             console.log(`[${buildId}] 🔧 Triggering Azure Container Job...`);
             const DistUrl = yield (0, azure_deploy_fullstack_1.triggerAzureContainerJob)(zipUrl, buildId, {
                 resourceGroup: process.env.AZURE_RESOURCE_GROUP,
@@ -461,7 +448,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
             });
             const urls = JSON.parse(DistUrl);
             const builtZipUrl = urls.downloadUrl;
-            // 7. Deploy to Azure Static Web Apps
+            // Deploy to Azure Static Web Apps
             console.log(`[${buildId}] 🚀 Deploying to SWA...`);
             const previewUrl = yield (0, azure_deploy_fullstack_1.runBuildAndDeploy)(builtZipUrl, buildId, {
                 VITE_SUPABASE_URL: supabaseUrl,
@@ -475,7 +462,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 message: "Deployment complete!",
                 percentage: 100,
             });
-            // 8. Save assistant response to message history
+            // Save assistant response to message history
             try {
                 const assistantMessageId = yield messageDB.addMessage(JSON.stringify({
                     structure: parsedResult.structure,
@@ -483,29 +470,24 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                     validation: {
                         fileStructure: validationResult.isValid,
                         supabase: supabaseValidation.isValid,
-                        tailwind: tailwindConfig
-                            ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content)
-                            : false,
+                        tailwind: tailwindConfig ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content) : false,
                     },
                 }), "assistant", {
-                    promptType: "frontend_generation",
-                    requestType: "claude_response",
-                    success: true,
-                    buildId: buildId,
+                    projectId: finalProjectId,
                     sessionId: sessionId,
+                    userId: userId,
+                    functionCalled: "frontend_generation",
+                    buildId: buildId,
                     previewUrl: previewUrl,
                     downloadUrl: urls.downloadUrl,
                     zipUrl: zipUrl,
-                    fileModifications: parsedFiles.map((f) => f.path),
-                    modificationSuccess: validationResult.isValid && supabaseValidation.isValid,
-                    modificationApproach: "FULL_FILE_GENERATION",
                 });
                 console.log(`[${buildId}] 💾 Saved enhanced summary to messageDB (ID: ${assistantMessageId})`);
             }
             catch (dbError) {
                 console.warn(`[${buildId}] ⚠️ Failed to save summary to messageDB:`, dbError);
             }
-            // 9. Update project URLs using Enhanced URL Manager
+            // Update project URLs using Enhanced URL Manager
             console.log(`[${buildId}] 💾 Using Enhanced URL Manager to save project URLs...`);
             if (finalProjectId && projectSaved) {
                 try {
@@ -537,7 +519,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 percentage: 100,
                 totalLength: totalLength,
             });
-            // Send the final result as JSON
+            // Send the final result
             const finalResult = {
                 success: true,
                 files: parsedFiles,
@@ -546,14 +528,13 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 zipUrl: zipUrl,
                 buildId: buildId,
                 sessionId: sessionId,
+                projectId: finalProjectId,
                 structure: parsedResult.structure,
                 summary: projectSummary,
                 validation: {
                     fileStructure: validationResult,
                     supabase: supabaseValidation,
-                    tailwindConfig: tailwindConfig
-                        ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content)
-                        : false,
+                    tailwindConfig: tailwindConfig ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content) : false,
                 },
                 supabase: {
                     filesFound: supabaseFiles.allSupabaseFiles.length,
@@ -563,17 +544,10 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 },
                 tailwind: {
                     configExists: !!tailwindConfig,
-                    validConfig: tailwindConfig
-                        ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content)
-                        : false,
+                    validConfig: tailwindConfig ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content) : false,
                 },
                 hosting: "Azure Static Web Apps",
-                features: [
-                    "Global CDN",
-                    "Auto SSL/HTTPS",
-                    "Custom domains support",
-                    "Staging environments",
-                ],
+                features: ["Global CDN", "Auto SSL/HTTPS", "Custom domains support", "Staging environments"],
                 streamingStats: {
                     totalCharacters: totalLength,
                     chunksStreamed: Math.floor(totalLength / CHUNK_SIZE),
@@ -599,23 +573,29 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
             // Save error to messageDB
             try {
                 yield messageDB.addMessage(`Frontend generation failed: ${error instanceof Error ? error.message : "Unknown error"}`, "assistant", {
-                    promptType: "frontend_generation",
-                    requestType: "claude_response",
-                    success: false,
-                    buildId: buildId,
+                    projectId: finalProjectId,
                     sessionId: sessionId,
+                    userId: userId,
+                    functionCalled: "frontend_generation",
+                    buildId: buildId,
                 });
             }
             catch (dbError) {
                 console.warn(`[${buildId}] ⚠️ Failed to save error to messageDB:`, dbError);
             }
-            // Cleanup session on error
+            // Cleanup on error
             yield sessionManager.cleanup(sessionId);
             yield cleanupTempDirectory(buildId);
             res.end();
         }
     }));
-    router.post("/", (req, res) => __awaiter(this, void 0, void 0, function* () { }));
+    // Non-streaming endpoint placeholder
+    router.post("/", (req, res) => __awaiter(this, void 0, void 0, function* () {
+        res.json({
+            success: false,
+            error: "Use /stream endpoint for generation",
+        });
+    }));
     return router;
 }
 //# sourceMappingURL=generation.js.map

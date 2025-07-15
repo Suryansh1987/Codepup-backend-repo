@@ -1,6 +1,7 @@
 export declare class ConversationService {
     createConversation(userId: string, projectId: number): Promise<{
         id: number;
+        isActive: boolean | null;
         createdAt: Date;
         updatedAt: Date;
         userId: number;
@@ -8,6 +9,8 @@ export declare class ConversationService {
         currentStep: string | null;
         designChoices: unknown;
         generatedFiles: unknown;
+        sessionId: string | null;
+        lastActivity: Date | null;
     }>;
     getConversationByProject(projectId: number): Promise<{
         id: number;
@@ -16,6 +19,9 @@ export declare class ConversationService {
         currentStep: string | null;
         designChoices: unknown;
         generatedFiles: unknown;
+        sessionId: string | null;
+        isActive: boolean | null;
+        lastActivity: Date | null;
         createdAt: Date;
         updatedAt: Date;
     }>;
@@ -26,6 +32,9 @@ export declare class ConversationService {
         currentStep: string | null;
         designChoices: unknown;
         generatedFiles: unknown;
+        sessionId: string | null;
+        isActive: boolean | null;
+        lastActivity: Date | null;
         createdAt: Date;
         updatedAt: Date;
     }>;
@@ -36,6 +45,9 @@ export declare class ConversationService {
         currentStep: string | null;
         designChoices: unknown;
         generatedFiles: unknown;
+        sessionId: string | null;
+        isActive: boolean | null;
+        lastActivity: Date | null;
         createdAt: Date;
         updatedAt: Date;
     }[]>;
@@ -50,6 +62,9 @@ export declare class ConversationService {
         currentStep: string | null;
         designChoices: unknown;
         generatedFiles: unknown;
+        sessionId: string | null;
+        isActive: boolean | null;
+        lastActivity: Date | null;
         createdAt: Date;
         updatedAt: Date;
     }>;
@@ -63,14 +78,18 @@ export declare class ConversationService {
         conversationId: number;
         userMessage: string | null;
         agentResponse: string | null;
+        messageType: "user" | "assistant" | "system";
         functionCalled: string | null;
+        metadata: unknown;
     }>;
     getMessagesByProject(projectId: number): Promise<{
         id: number;
         conversationId: number;
         userMessage: string | null;
         agentResponse: string | null;
+        messageType: "user" | "assistant" | "system";
         functionCalled: string | null;
+        metadata: unknown;
         createdAt: Date;
     }[]>;
 }

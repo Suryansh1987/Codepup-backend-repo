@@ -16,9 +16,6 @@ exports.FullFileProcessor = void 0;
 const path_1 = require("path");
 const fs_1 = require("fs");
 const template_1 = require("../filemodifier/template");
-// ============================================================================
-// ENHANCED FILE ANALYZER WITH TAILWIND CONFIG
-// ============================================================================
 class EnhancedFileAnalyzer {
     constructor(anthropic) {
         this.anthropic = anthropic;

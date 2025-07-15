@@ -226,7 +226,7 @@ export class ScopeAnalyzer {
   } {
     const promptLower = prompt.toLowerCase();
     
-    // Strong indicators for TEXT_BASED_CHANGE (highest priority for simple text replacements)
+
     const textChangePatterns = [
       /change\s+["']([^"']+)["']\s+to\s+["']([^"']+)["']/i,
       /replace\s+["']([^"']+)["']\s+with\s+["']([^"']+)["']/i,
@@ -371,16 +371,14 @@ export class ScopeAnalyzer {
       reasoning = "Keywords suggest specific element modification";
     } else {
       suggestedScope = "FULL_FILE";
-      confidence = Math.min(95, Math.max(50, fullFileScore)); // Minimum 50% for fallback
+      confidence = Math.min(95, Math.max(50, fullFileScore)); 
       reasoning = fullFileScore > 0 ? "Keywords suggest comprehensive changes" : "Default for unclear requests";
     }
 
     return { suggestedScope, confidence, reasoning };
   }
 
-  /**
-   * AI CALL: Enhanced method determination with TAILWIND_CHANGE support and token tracking
-   */
+ 
   private async determineModificationMethod(
     prompt: string,
     projectSummary: string,
@@ -406,21 +404,26 @@ ${heuristicResult ? `**HEURISTIC ANALYSIS:**\nSuggested: ${heuristicResult.sugge
 
 **METHOD OPTIONS (in order of preference - choose the most specific that applies):**
 
-1. **TEXT_BASED_CHANGE** – For simple text replacements:
+1-TEXT_BASED_CHANGE – For pure content replacement:
 ✅ CHOOSE THIS IF the request involves:
-- Changing specific text content (labels, headings, button text)
-- Replacing exact words or phrases
-- Content updates without styling changes
-- Requests like:
-  "change 'Welcome' to 'Hello'"
-  "update button text from 'Submit' to 'Send'"
-  "replace 'Contact Us' with 'Get In Touch'"
-  "change the heading to say 'About Our Company'"
 
-**For TEXT_BASED_CHANGE requests, you MUST:**
-1. **Extract exact search terms** from the user's request
-2. **Identify exact replacement terms** the user wants
-3. **Provide multiple search variations** (case variations, partial matches, etc.)
+Only changing text content (no styling, positioning, or visual changes)
+Simple word/phrase replacements across the entire page/component
+Content updates without any visual modifications or specific element targeting
+Requests like:
+
+"change 'Welcome' to 'Hello'"
+"replace 'Contact Us' with 'Get in Touch'"
+"update all instances of 'Services' to 'Our Services'"
+"change 'Copyright 2024' to 'Copyright 2025'"
+
+
+
+For TEXT_BASED_CHANGE requests, you MUST:
+
+Extract exact search terms from the user's request
+Identify exact replacement terms the user wants
+Provide multiple search variations (case variations, partial matches, etc.)
 
 2. **TAILWIND_CHANGE** – For global color/theme changes without specific targets:
 ✅ CHOOSE THIS IF the request involves:
@@ -436,16 +439,23 @@ ${heuristicResult ? `**HEURISTIC ANALYSIS:**\nSuggested: ${heuristicResult.sugge
   "change theme colors"
   "make it more colorful"
 
-3. **TARGETED_NODES** – For specific existing element changes:
+3-TARGETED_NODES – For specific element modifications:
 ✅ CHOOSE THIS IF the request targets:
-- A specific existing element like a button, color, image, or style
-- Modifying a single UI component or element (not adding)
-- Requests with words like:
-  "change THis "button text" button color to this"
-  "make THIS text bold"
-  "update SPECIFIC heading font"
-  "replace THE image"
-  "make THAT title larger"
+
+Specific existing elements with any kind of modification
+Descriptive targeting of particular UI components or locations
+Changes that specify WHERE the modification should happen
+Any styling, visual, or structural changes to specific elements
+Requests with descriptive targeting like:
+
+"change this button's color to blue"
+"make that title larger and bold"
+"update the footer background"
+"replace the header image"
+"in footer visit us today change location to bangalore,India"
+"make this specific text bold"
+"update the navigation menu links"
+"change the sidebar content"
 
 4. **COMPONENT_ADDITION** – For creating new UI elements or features or pages:
 ✅ CHOOSE THIS IF the request involves:

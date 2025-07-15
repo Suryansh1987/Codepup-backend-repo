@@ -1,3 +1,4 @@
+// routes/generation.ts - Simplified for 4-table schema
 import express, { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import AdmZip from "adm-zip";
@@ -18,9 +19,9 @@ import {
 } from "../utils/newparser";
 import Anthropic from "@anthropic-ai/sdk";
 import { pro5Enhanced2, pro5Enhanced3 } from "../defaults/promt";
-import { createClient } from "@supabase/supabase-js";
 import { DrizzleMessageHistoryDB } from "../db/messagesummary";
 import { StatelessSessionManager } from "./session";
+import { resolveUserId, getProjectSecrets } from "../utils/helper-functions";
 
 const router = express.Router();
 
@@ -28,31 +29,6 @@ interface FileData {
   path: string;
   content: string;
 }
-
-// Update your Project interface (wherever it's defined)
-interface Project {
-  id: number;
-  userId: number;
-  name: string;
-  description: string;
-  status: string;
-  projectType: string;
-  deploymentUrl: string;
-  downloadUrl: string;
-  zipUrl: string;
-  buildId: string;
-  lastSessionId: string;
-  framework: string;
-  template: string;
-  lastMessageAt: Date;
-  messageCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-  // ADD THESE NEW FIELDS:
-  supabaseUrl?: string; // Optional since existing projects might not have it
-  supabaseAnonKey?: string; // Optional since existing projects might not have it
-}
-// Update your interfaces to match the actual schema field names:
 
 interface CreateProjectInput {
   userId: number;
@@ -69,28 +45,10 @@ interface CreateProjectInput {
   template: string;
   lastMessageAt: Date;
   messageCount: number;
-  // USE THE CORRECT FIELD NAMES FROM YOUR SCHEMA:
-  supabaseurl?: string; // Note: lowercase 'url'
-  aneonkey?: string; // Note: 'aneonkey' not 'supabaseAnonKey'
+  supabaseurl?: string;
+  aneonkey?: string;
 }
 
-interface UpdateProjectInput {
-  name?: string;
-  description?: string;
-  status?: string;
-  buildId?: string;
-  lastSessionId?: string;
-  framework?: string;
-  template?: string;
-  lastMessageAt?: Date;
-  updatedAt?: Date;
-  deploymentUrl?: string;
-  downloadUrl?: string;
-  zipUrl?: string;
-  // USE THE CORRECT FIELD NAMES FROM YOUR SCHEMA:
-  supabaseurl?: string; // Note: lowercase 'url'
-  aneonkey?: string; // Note: 'aneonkey' not 'supabaseAnonKey'
-}
 interface StreamingProgressData {
   type: "progress" | "length" | "chunk" | "complete" | "error";
   buildId: string;
@@ -104,86 +62,28 @@ interface StreamingProgressData {
   error?: string;
 }
 
-// FIXED: Better cleanup with proper error handling and timing
+// Helper functions
 async function cleanupTempDirectory(buildId: string): Promise<void> {
   const tempBuildDir = path.join(__dirname, "../../temp-builds", buildId);
   try {
     if (fs.existsSync(tempBuildDir)) {
       await fs.promises.rm(tempBuildDir, { recursive: true, force: true });
       console.log(`[${buildId}] 🧹 Temp directory cleaned up`);
-    } else {
-      console.log(
-        `[${buildId}] 🧹 Temp directory already cleaned or doesn't exist`
-      );
     }
   } catch (error) {
     console.warn(`[${buildId}] ⚠️ Failed to cleanup temp directory:`, error);
   }
 }
 
-// ADD THIS ENTIRE FUNCTION
-async function resolveUserId(
-  messageDB: DrizzleMessageHistoryDB,
-  providedUserId?: number,
-  sessionId?: string
-): Promise<number> {
-  try {
-    // Priority 1: Use provided userId if valid
-    if (
-      providedUserId &&
-      (await messageDB.validateUserExists(providedUserId))
-    ) {
-      return providedUserId;
-    }
-
-    // Priority 2: Get userId from session's most recent project
-    if (sessionId) {
-      const sessionProject = await messageDB.getProjectBySessionId(sessionId);
-      if (sessionProject && sessionProject.userId) {
-        return sessionProject.userId;
-      }
-    }
-
-    // Priority 3: Get most recent user from any project
-    const mostRecentUserId = await messageDB.getMostRecentUserId();
-    if (
-      mostRecentUserId &&
-      (await messageDB.validateUserExists(mostRecentUserId))
-    ) {
-      return mostRecentUserId;
-    }
-
-    // Priority 4: Create a new user with current timestamp
-    const newUserId = Date.now() % 1000000;
-    await messageDB.ensureUserExists(newUserId, {
-      email: `user${newUserId}@buildora.dev`,
-      name: `User ${newUserId}`,
-    });
-
-    console.log(`✅ Created new user ${newUserId} as fallback`);
-    return newUserId;
-  } catch (error) {
-    console.error("❌ Failed to resolve user ID:", error);
-    throw new Error("Could not resolve or create user");
-  }
-}
-
 function scheduleCleanup(buildId: string, delayInHours: number = 1): void {
-  const delayMs = delayInHours * 60 * 60 * 1000; // Convert hours to milliseconds
-
+  const delayMs = delayInHours * 60 * 60 * 1000;
   setTimeout(async () => {
-    console.log(
-      `[${buildId}] 🕐 Scheduled cleanup starting after ${delayInHours} hour(s)`
-    );
+    console.log(`[${buildId}] 🕐 Scheduled cleanup starting after ${delayInHours} hour(s)`);
     await cleanupTempDirectory(buildId);
   }, delayMs);
-
-  console.log(
-    `[${buildId}] ⏰ Cleanup scheduled for ${delayInHours} hour(s) from now`
-  );
+  console.log(`[${buildId}] ⏰ Cleanup scheduled for ${delayInHours} hour(s) from now`);
 }
 
-// NEW: Helper function to send streaming updates
 function sendStreamingUpdate(res: Response, data: StreamingProgressData): void {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
@@ -195,79 +95,110 @@ export function initializeGenerationRoutes(
 ): express.Router {
   const urlManager = new EnhancedProjectUrlManager(messageDB);
 
-  // NEW: Streaming endpoint
-  router.post("/stream", async (req: Request, res: Response): Promise<void> => {
-    const {
-      prompt,
-      projectId,
-      supabaseToken,
-      databaseUrl,
-      supabaseUrl,
-      supabaseAnonKey,
-      userId: providedUserId,
-    } = req.body;
+  // Streaming endpoint
+ router.post("/stream", async (req: Request, res: Response): Promise<void> => {
+  const {
+    prompt,
+    projectId,
+    supabaseToken,
+    databaseUrl,
+    supabaseUrl,
+    supabaseAnonKey,
+    userId: providedUserId,
+    clerkId, // Add this to handle Clerk ID from frontend
+  } = req.body;
 
-    if (!prompt) {
-      res.status(400).json({
-        success: false,
-        error: "Prompt is required",
-      });
-      return;
+  if (!prompt) {
+    res.status(400).json({
+      success: false,
+      error: "Prompt is required",
+    });
+    return;
+  }
+
+  const buildId = uuidv4();
+  const sessionId = sessionManager.generateSessionId();
+
+  // Set up Server-Sent Events
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Cache-Control",
+  });
+
+  sendStreamingUpdate(res, {
+    type: "progress",
+    buildId,
+    sessionId,
+    phase: "generating",
+    message: "Starting code generation...",
+    percentage: 0,
+  });
+
+  // UPDATED USER RESOLUTION - Use Clerk ID approach
+  let userId: number;
+  try {
+    if (clerkId) {
+      // Try to find user by Clerk ID first
+      const existingUser = await messageDB.getUserByClerkId(clerkId);
+      if (existingUser) {
+        userId = existingUser.id;
+        console.log(`[${buildId}] Found user by Clerk ID: ${userId}`);
+      } else {
+        // Create user with Clerk ID if provided but not found
+        console.log(`[${buildId}] Creating new user with Clerk ID: ${clerkId}`);
+        userId = await messageDB.createUserWithClerkId({
+          clerkId: clerkId,
+          email: `${clerkId}@clerk.dev`,
+          name: "User",
+        });
+        console.log(`[${buildId}] Created new user: ${userId}`);
+      }
+    } else if (providedUserId) {
+      // Fallback to old approach if no Clerk ID
+      const userExists = await messageDB.validateUserExists(providedUserId);
+      if (userExists) {
+        userId = providedUserId;
+        console.log(`[${buildId}] Using provided user ID: ${userId}`);
+      } else {
+        // Create user with provided ID
+        await messageDB.ensureUserExists(providedUserId);
+        userId = providedUserId;
+        console.log(`[${buildId}] Created user with ID: ${userId}`);
+      }
+    } else {
+      // Last resort - create a fallback user
+      const fallbackUserId = Date.now() % 1000000;
+      await messageDB.ensureUserExists(fallbackUserId);
+      userId = fallbackUserId;
+      console.log(`[${buildId}] Created fallback user: ${userId}`);
     }
 
-    const buildId = uuidv4();
-    const sessionId = sessionManager.generateSessionId();
-
-    // Set up Server-Sent Events
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Cache-Control",
-    });
-
-    // Send initial progress
+    console.log(`[${buildId}] Resolved user ID: ${userId}`);
+  } catch (error) {
+    console.error(`[${buildId}] Failed to resolve user:`, error);
     sendStreamingUpdate(res, {
-      type: "progress",
+      type: "error",
       buildId,
       sessionId,
-      phase: "generating",
-      message: "Starting code generation...",
-      percentage: 0,
+      error: "Failed to resolve user for project generation",
     });
+    res.end();
+    return;
+  }
 
-    let userId: number;
-    try {
-      userId = await resolveUserId(messageDB, providedUserId, sessionId);
-      console.log(
-        `[${buildId}] Resolved user ID: ${userId} (provided: ${providedUserId})`
-      );
-    } catch (error) {
-      sendStreamingUpdate(res, {
-        type: "error",
-        buildId,
-        sessionId,
-        error: "Failed to resolve user for project generation",
-      });
-      res.end();
-      return;
-    }
-
-    console.log(
-      `[${buildId}] Starting streaming generation for prompt: "${prompt.substring(
-        0,
-        100
-      )}..."`
-    );
-
+  // Rest of your code remains the same...
+  console.log(`[${buildId}] Starting streaming generation for prompt: "${prompt.substring(0, 100)}..."`);
+  
     const sourceTemplateDir = path.join(__dirname, "../../react-base");
     const tempBuildDir = path.join(__dirname, "../../temp-builds", buildId);
     let finalProjectId: number = projectId || 0;
     let projectSaved = false;
     let accumulatedResponse = "";
     let totalLength = 0;
-    const CHUNK_SIZE = 10000; // 10k characters
+    const CHUNK_SIZE = 10000;
 
     try {
       // Save initial session context
@@ -277,11 +208,9 @@ export function initializeGenerationRoutes(
         lastActivity: Date.now(),
       });
 
-      // 1. Setup temp directory
+      // Setup temp directory
       await fs.promises.mkdir(tempBuildDir, { recursive: true });
-      await fs.promises.cp(sourceTemplateDir, tempBuildDir, {
-        recursive: true,
-      });
+      await fs.promises.cp(sourceTemplateDir, tempBuildDir, { recursive: true });
 
       sendStreamingUpdate(res, {
         type: "progress",
@@ -292,19 +221,11 @@ export function initializeGenerationRoutes(
         percentage: 5,
       });
 
-      // Update session with temp directory
       await sessionManager.updateSessionContext(sessionId, { tempBuildDir });
 
-      // CREATE OR UPDATE PROJECT RECORD
-      // UPDATE PROJECT RECORD section (around line 135-150)
-      // CREATE OR UPDATE PROJECT RECORD section - Replace your existing code with this:
-
-      // UPDATE PROJECT RECORD section - Use the correct field names from your schema:
-
+      // Create or update project record
       if (projectId) {
-        console.log(
-          `[${buildId}] 🔄 Updating existing project ${projectId}...`
-        );
+        console.log(`[${buildId}] 🔄 Updating existing project ${projectId}...`);
         try {
           await messageDB.updateProject(projectId, {
             name: `Updated Project ${buildId.substring(0, 8)}`,
@@ -316,20 +237,14 @@ export function initializeGenerationRoutes(
             template: "vite-react-ts",
             lastMessageAt: new Date(),
             updatedAt: new Date(),
-            // USE THE CORRECT FIELD NAMES FROM YOUR SCHEMA:
-            supabaseurl: supabaseUrl, // Note: lowercase 'url'
-            aneonkey: supabaseAnonKey, // Note: 'aneonkey' not 'supabaseAnonKey'
+            supabaseurl: supabaseUrl,
+            aneonkey: supabaseAnonKey,
           });
           finalProjectId = projectId;
           projectSaved = true;
-          console.log(
-            `[${buildId}] ✅ Updated existing project record: ${finalProjectId}`
-          );
+          console.log(`[${buildId}] ✅ Updated existing project record: ${finalProjectId}`);
         } catch (updateError) {
-          console.error(
-            `[${buildId}] ❌ Failed to update existing project:`,
-            updateError
-          );
+          console.error(`[${buildId}] ❌ Failed to update existing project:`, updateError);
         }
       } else {
         console.log(`[${buildId}] 💾 Creating new project record...`);
@@ -337,10 +252,7 @@ export function initializeGenerationRoutes(
           finalProjectId = await messageDB.createProject({
             userId,
             name: `Generated Project ${buildId.substring(0, 8)}`,
-            description: `React project generated from prompt: ${prompt.substring(
-              0,
-              100
-            )}...`,
+            description: `React project generated from prompt: ${prompt.substring(0, 100)}...`,
             status: "generating",
             projectType: "generated",
             deploymentUrl: "",
@@ -352,19 +264,13 @@ export function initializeGenerationRoutes(
             template: "vite-react-ts",
             lastMessageAt: new Date(),
             messageCount: 0,
-            // USE THE CORRECT FIELD NAMES FROM YOUR SCHEMA:
-            supabaseurl: supabaseUrl, // Note: lowercase 'url'
-            aneonkey: supabaseAnonKey, // Note: 'aneonkey' not 'supabaseAnonKey'
+            supabaseurl: supabaseUrl,
+            aneonkey: supabaseAnonKey,
           });
           projectSaved = true;
-          console.log(
-            `[${buildId}] ✅ Created new project record: ${finalProjectId}`
-          );
+          console.log(`[${buildId}] ✅ Created new project record: ${finalProjectId}`);
         } catch (projectError) {
-          console.error(
-            `[${buildId}] ❌ Failed to create project record:`,
-            projectError
-          );
+          console.error(`[${buildId}] ❌ Failed to create project record:`, projectError);
         }
       }
 
@@ -379,7 +285,7 @@ export function initializeGenerationRoutes(
 
       console.log(`[${buildId}] 🚀 Generating frontend code with streaming...`);
 
-      // NEW: Stream with length tracking
+      // Generate code with streaming
       const frontendResult = await anthropic.messages
         .stream({
           model: "claude-sonnet-4-0",
@@ -397,22 +303,17 @@ export function initializeGenerationRoutes(
           accumulatedResponse += text;
           totalLength += text.length;
 
-          // Send length update
           sendStreamingUpdate(res, {
             type: "length",
             buildId,
             sessionId,
             currentLength: totalLength,
-            percentage: Math.min(10 + (totalLength / 50000) * 60, 70), // 10-70% for generation
+            percentage: Math.min(10 + (totalLength / 50000) * 60, 70),
           });
 
-          // Send chunk update every 10k characters
           if (totalLength > 0 && totalLength % CHUNK_SIZE === 0) {
             const chunkStart = totalLength - CHUNK_SIZE;
-            const chunk = accumulatedResponse.substring(
-              chunkStart,
-              totalLength
-            );
+            const chunk = accumulatedResponse.substring(chunkStart, totalLength);
 
             sendStreamingUpdate(res, {
               type: "chunk",
@@ -440,21 +341,15 @@ export function initializeGenerationRoutes(
         totalLength: totalLength,
       });
 
-      console.log(
-        `[${buildId}] ✅ Code generation completed with ${totalLength} characters`
-      );
+      console.log(`[${buildId}] ✅ Code generation completed with ${totalLength} characters`);
 
-      // 3. Parse generated files with enhanced parser
+      // Parse generated files
       let parsedResult: ParsedResult;
       try {
-        console.log(
-          `[${buildId}] 📝 Parsing generated code with enhanced parser...`
-        );
+        console.log(`[${buildId}] 📝 Parsing generated code...`);
         parsedResult = parseFrontendCode(claudeResponse);
         console.log(`[${buildId}] ✅ Code parsing successful`);
-        console.log(
-          `[${buildId}] 📊 Parsed ${parsedResult.codeFiles.length} files`
-        );
+        console.log(`[${buildId}] 📊 Parsed ${parsedResult.codeFiles.length} files`);
 
         sendStreamingUpdate(res, {
           type: "progress",
@@ -470,19 +365,14 @@ export function initializeGenerationRoutes(
           type: "error",
           buildId,
           sessionId,
-          error: `Failed to parse Claude response: ${
-            parseError instanceof Error ? parseError.message : "Unknown error"
-          }`,
+          error: `Failed to parse Claude response: ${parseError instanceof Error ? parseError.message : "Unknown error"}`,
         });
         res.end();
         return;
       }
 
-      // 4. Process files with enhanced validation
-      console.log(
-        `[${buildId}] 🔧 Processing files with enhanced validation...`
-      );
-
+      // Process files
+      console.log(`[${buildId}] 🔧 Processing files with enhanced validation...`);
       const processedProject = processTailwindProject(parsedResult.codeFiles);
       const {
         processedFiles,
@@ -501,7 +391,6 @@ export function initializeGenerationRoutes(
         percentage: 80,
       });
 
-      // Use processed files instead of original parsed files
       const parsedFiles: FileData[] = processedFiles;
 
       if (!parsedFiles || parsedFiles.length === 0) {
@@ -518,20 +407,16 @@ export function initializeGenerationRoutes(
       console.log(`[${buildId}] 💾 Writing ${parsedFiles.length} files...`);
       const fileMap: { [path: string]: string } = {};
 
-      // Write files with error handling
+      // Write files
       for (const file of parsedFiles) {
         try {
           const fullPath = path.join(tempBuildDir, file.path);
           await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
           await fs.promises.writeFile(fullPath, file.content, "utf8");
-
           fileMap[file.path] = file.content;
           console.log(`[${buildId}] ✅ Written: ${file.path}`);
         } catch (writeError) {
-          console.error(
-            `[${buildId}] ❌ Failed to write ${file.path}:`,
-            writeError
-          );
+          console.error(`[${buildId}] ❌ Failed to write ${file.path}:`, writeError);
           sendStreamingUpdate(res, {
             type: "error",
             buildId,
@@ -543,7 +428,7 @@ export function initializeGenerationRoutes(
         }
       }
 
-      // Cache all files in session
+      // Cache files in session
       await sessionManager.cacheProjectFiles(sessionId, fileMap);
 
       sendStreamingUpdate(res, {
@@ -555,7 +440,6 @@ export function initializeGenerationRoutes(
         percentage: 85,
       });
 
-      // Wait for file operations
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
       console.log(`[${buildId}] 📦 Creating zip and uploading to Azure...`);
@@ -580,13 +464,13 @@ export function initializeGenerationRoutes(
         percentage: 90,
       });
 
-      // Generate comprehensive project summary
+      // Generate project summary
       const projectSummary = generateProjectSummary({
         codeFiles: processedFiles,
         structure: parsedResult.structure,
       });
 
-      // Update session context with enhanced project summary
+      // Update session context
       await sessionManager.updateSessionContext(sessionId, {
         projectSummary: {
           structure: parsedResult.structure,
@@ -594,9 +478,7 @@ export function initializeGenerationRoutes(
           validation: {
             fileStructure: validationResult,
             supabase: supabaseValidation,
-            tailwind: tailwindConfig
-              ? validateTailwindConfig(tailwindConfig.content)
-              : false,
+            tailwind: tailwindConfig ? validateTailwindConfig(tailwindConfig.content) : false,
           },
           supabaseInfo: {
             filesFound: supabaseFiles.allSupabaseFiles.length,
@@ -610,7 +492,7 @@ export function initializeGenerationRoutes(
         },
       });
 
-      // 6. Trigger Azure Container Job
+      // Trigger Azure Container Job
       console.log(`[${buildId}] 🔧 Triggering Azure Container Job...`);
       const DistUrl = await triggerAzureContainerJob(zipUrl, buildId, {
         resourceGroup: process.env.AZURE_RESOURCE_GROUP!,
@@ -627,7 +509,7 @@ export function initializeGenerationRoutes(
       const urls = JSON.parse(DistUrl);
       const builtZipUrl = urls.downloadUrl;
 
-      // 7. Deploy to Azure Static Web Apps
+      // Deploy to Azure Static Web Apps
       console.log(`[${buildId}] 🚀 Deploying to SWA...`);
       const previewUrl = await runBuildAndDeploy(builtZipUrl, buildId, {
         VITE_SUPABASE_URL: supabaseUrl,
@@ -643,7 +525,7 @@ export function initializeGenerationRoutes(
         percentage: 100,
       });
 
-      // 8. Save assistant response to message history
+      // Save assistant response to message history
       try {
         const assistantMessageId = await messageDB.addMessage(
           JSON.stringify({
@@ -652,41 +534,28 @@ export function initializeGenerationRoutes(
             validation: {
               fileStructure: validationResult.isValid,
               supabase: supabaseValidation.isValid,
-              tailwind: tailwindConfig
-                ? validateTailwindConfig(tailwindConfig.content)
-                : false,
+              tailwind: tailwindConfig ? validateTailwindConfig(tailwindConfig.content) : false,
             },
           }),
           "assistant",
           {
-            promptType: "frontend_generation",
-            requestType: "claude_response",
-            success: true,
-            buildId: buildId,
+            projectId: finalProjectId,
             sessionId: sessionId,
+            userId: userId,
+            functionCalled: "frontend_generation",
+            buildId: buildId,
             previewUrl: previewUrl,
             downloadUrl: urls.downloadUrl,
             zipUrl: zipUrl,
-            fileModifications: parsedFiles.map((f) => f.path),
-            modificationSuccess:
-              validationResult.isValid && supabaseValidation.isValid,
-            modificationApproach: "FULL_FILE_GENERATION",
           }
         );
-        console.log(
-          `[${buildId}] 💾 Saved enhanced summary to messageDB (ID: ${assistantMessageId})`
-        );
+        console.log(`[${buildId}] 💾 Saved enhanced summary to messageDB (ID: ${assistantMessageId})`);
       } catch (dbError) {
-        console.warn(
-          `[${buildId}] ⚠️ Failed to save summary to messageDB:`,
-          dbError
-        );
+        console.warn(`[${buildId}] ⚠️ Failed to save summary to messageDB:`, dbError);
       }
 
-      // 9. Update project URLs using Enhanced URL Manager
-      console.log(
-        `[${buildId}] 💾 Using Enhanced URL Manager to save project URLs...`
-      );
+      // Update project URLs using Enhanced URL Manager
+      console.log(`[${buildId}] 💾 Using Enhanced URL Manager to save project URLs...`);
       if (finalProjectId && projectSaved) {
         try {
           await urlManager.saveNewProjectUrls(
@@ -705,14 +574,9 @@ export function initializeGenerationRoutes(
               template: "vite-react-ts",
             }
           );
-          console.log(
-            `[${buildId}] ✅ Enhanced URL Manager - Successfully updated project ${finalProjectId}`
-          );
+          console.log(`[${buildId}] ✅ Enhanced URL Manager - Successfully updated project ${finalProjectId}`);
         } catch (projectError) {
-          console.error(
-            `[${buildId}] ❌ Enhanced URL Manager failed:`,
-            projectError
-          );
+          console.error(`[${buildId}] ❌ Enhanced URL Manager failed:`, projectError);
         }
       }
 
@@ -730,7 +594,7 @@ export function initializeGenerationRoutes(
         totalLength: totalLength,
       });
 
-      // Send the final result as JSON
+      // Send the final result
       const finalResult = {
         success: true,
         files: parsedFiles,
@@ -739,14 +603,13 @@ export function initializeGenerationRoutes(
         zipUrl: zipUrl,
         buildId: buildId,
         sessionId: sessionId,
+        projectId: finalProjectId,
         structure: parsedResult.structure,
         summary: projectSummary,
         validation: {
           fileStructure: validationResult,
           supabase: supabaseValidation,
-          tailwindConfig: tailwindConfig
-            ? validateTailwindConfig(tailwindConfig.content)
-            : false,
+          tailwindConfig: tailwindConfig ? validateTailwindConfig(tailwindConfig.content) : false,
         },
         supabase: {
           filesFound: supabaseFiles.allSupabaseFiles.length,
@@ -756,17 +619,10 @@ export function initializeGenerationRoutes(
         },
         tailwind: {
           configExists: !!tailwindConfig,
-          validConfig: tailwindConfig
-            ? validateTailwindConfig(tailwindConfig.content)
-            : false,
+          validConfig: tailwindConfig ? validateTailwindConfig(tailwindConfig.content) : false,
         },
         hosting: "Azure Static Web Apps",
-        features: [
-          "Global CDN",
-          "Auto SSL/HTTPS",
-          "Custom domains support",
-          "Staging environments",
-        ],
+        features: ["Global CDN", "Auto SSL/HTTPS", "Custom domains support", "Staging environments"],
         streamingStats: {
           totalCharacters: totalLength,
           chunksStreamed: Math.floor(totalLength / CHUNK_SIZE),
@@ -783,10 +639,7 @@ export function initializeGenerationRoutes(
       );
 
       res.end();
-
-      console.log(
-        `[${buildId}] ✅ Streaming build process completed successfully`
-      );
+      console.log(`[${buildId}] ✅ Streaming build process completed successfully`);
     } catch (error) {
       console.error(`[${buildId}] ❌ Streaming build process failed:`, error);
 
@@ -800,34 +653,34 @@ export function initializeGenerationRoutes(
       // Save error to messageDB
       try {
         await messageDB.addMessage(
-          `Frontend generation failed: ${
-            error instanceof Error ? error.message : "Unknown error"
-          }`,
+          `Frontend generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
           "assistant",
           {
-            promptType: "frontend_generation",
-            requestType: "claude_response",
-            success: false,
-            buildId: buildId,
+            projectId: finalProjectId,
             sessionId: sessionId,
+            userId: userId,
+            functionCalled: "frontend_generation",
+            buildId: buildId,
           }
         );
       } catch (dbError) {
-        console.warn(
-          `[${buildId}] ⚠️ Failed to save error to messageDB:`,
-          dbError
-        );
+        console.warn(`[${buildId}] ⚠️ Failed to save error to messageDB:`, dbError);
       }
 
-      // Cleanup session on error
+      // Cleanup on error
       await sessionManager.cleanup(sessionId);
       await cleanupTempDirectory(buildId);
-
       res.end();
     }
   });
 
-  router.post("/", async (req: Request, res: Response): Promise<void> => {});
+  // Non-streaming endpoint placeholder
+  router.post("/", async (req: Request, res: Response): Promise<void> => {
+    res.json({
+      success: false,
+      error: "Use /stream endpoint for generation",
+    });
+  });
 
   return router;
 }

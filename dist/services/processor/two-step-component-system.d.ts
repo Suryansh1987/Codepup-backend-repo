@@ -6,12 +6,20 @@ export interface ComponentTypeAnalysis {
     targetDirectory: string;
     fileName: string;
     needsRouting: boolean;
+    description?: string;
+    category?: string;
+    fileExtension?: string;
+    needsFullContext?: boolean;
+    contextFiles?: string[];
+    contextKeywords?: string[];
 }
 export interface GenerationResult {
     success: boolean;
     generatedContent: string;
     componentType: ComponentTypeAnalysis;
     elementTreeContext: string;
+    supabaseSchemaContext: string;
+    fullContextContent?: string;
     projectPatterns: {
         exportPattern: 'default' | 'named' | 'mixed';
         importPattern: 'default' | 'named' | 'mixed';
@@ -31,7 +39,16 @@ export interface IntegrationResult {
     integrationResults: {
         routingUpdated: boolean;
         appFileUpdated: boolean;
+        navigationUpdated: boolean;
+        headerUpdated: boolean;
+        footerUpdated: boolean;
         dependenciesResolved: boolean;
+        usageExampleAdded: boolean;
+        pagesUpdated: string[];
+        routeAlreadyExisted: boolean;
+        navigationAlreadyExists: boolean;
+        supabaseIntegrated?: boolean;
+        contextFilesLinked?: boolean;
     };
     error?: string;
 }
@@ -41,42 +58,73 @@ export interface TwoStepResult {
     step2: IntegrationResult;
     summary: string;
     totalDuration: number;
+    enhancedFeatures: {
+        supabaseIntegration: boolean;
+        contextIntegration: boolean;
+        businessTypeDetected: string;
+        tailwindQuality: 'basic' | 'advanced' | 'expert';
+    };
     error?: string;
 }
 export interface TwoStepOptions {
     skipIntegration?: boolean;
     dryRun?: boolean;
     verbose?: boolean;
+    projectId?: number;
+    forceSupabaseContext?: boolean;
+    businessType?: string;
 }
 export declare class TwoStepComponentGenerationSystem {
     private analysisEngine;
     private integrationEngine;
     private streamCallback?;
-    constructor(anthropic: any, reactBasePath: string);
+    private messageDB?;
+    constructor(anthropic: any, reactBasePath: string, messageDB?: any);
     setStreamCallback(callback: (message: string) => void): void;
     private streamUpdate;
     /**
-     * MAIN TWO-STEP WORKFLOW
+     * 🔥 ENHANCED MAIN TWO-STEP WORKFLOW WITH SUPABASE & CONTEXT INTEGRATION
      */
-    generateComponent(userPrompt: string, options?: TwoStepOptions): Promise<TwoStepResult>;
+    generateComponent(userPrompt: string, options?: TwoStepOptions, projectId?: number): Promise<TwoStepResult>;
     /**
-     * CREATE SUMMARY
+     * 🔥 NEW: DETECT ENHANCED FEATURES FROM GENERATION RESULT
      */
-    private createSummary;
+    private detectEnhancedFeatures;
     /**
-     * GET PROJECT ANALYSIS SUMMARY
+     * 🔥 NEW: LOG ENHANCED FEATURES
+     */
+    private logEnhancedFeatures;
+    /**
+     * 🔥 ENHANCED: CREATE DETAILED SUMMARY WITH SUPABASE & CONTEXT INFO
+     */
+    private createEnhancedSummary;
+    /**
+     * 🔥 ENHANCED: GET PROJECT ANALYSIS WITH SUPABASE INFO
      */
     getProjectAnalysisSummary(): Promise<string>;
     /**
-     * REFRESH FILE STRUCTURE
+     * 🔥 ENHANCED: REFRESH WITH SUPABASE SCANNING
      */
     refreshFileStructure(): Promise<void>;
     /**
-     * ANALYSIS ONLY
+     * 🔥 ENHANCED: ANALYSIS ONLY WITH SUPABASE
      */
-    analyzeOnly(userPrompt: string): Promise<GenerationResult>;
+    analyzeOnly(userPrompt: string, projectId?: number): Promise<GenerationResult>;
     /**
-     * INTEGRATION ONLY
+     * INTEGRATION ONLY (unchanged)
      */
     integrateOnly(generationResult: GenerationResult): Promise<IntegrationResult>;
+    /**
+     * 🔥 NEW: GET SUPABASE SCHEMA SUMMARY
+     */
+    getSupabaseSchemaStatus(): Promise<{
+        available: boolean;
+        tables: number;
+        files: number;
+        status: string;
+    }>;
+    /**
+     * 🔥 NEW: FORCE SUPABASE CONTEXT FOR SIMPLE COMPONENTS
+     */
+    generateWithForcedSupabase(userPrompt: string, projectId?: number): Promise<TwoStepResult>;
 }

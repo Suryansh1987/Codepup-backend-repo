@@ -1,4 +1,4 @@
-// services/messageService.ts - Enhanced message service with dynamic user handling
+// services/messageService.ts - Simplified for 4-table schema
 import { DrizzleMessageHistoryDB } from '../db/messagesummary';
 import { RedisService } from './Redis';
 import { StatelessSessionManager } from '../routes/session';
@@ -7,32 +7,15 @@ import Anthropic from '@anthropic-ai/sdk';
 interface CreateMessageRequest {
   content: string;
   messageType: 'user' | 'assistant' | 'system';
+  projectId: number;
   userId?: number;
   sessionId?: string;
   metadata?: {
-    fileModifications?: string[];
-    modificationApproach?: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'FULL_FILE_GENERATION';
-    modificationSuccess?: boolean;
-    createdFiles?: string[];
-    addedFiles?: string[];
-    promptType?: string;
-    requestType?: string;
-    relatedUserMessageId?: string;
+    functionCalled?: string;
     success?: boolean;
     processingTimeMs?: number;
     tokenUsage?: any;
-    responseLength?: number;
-    buildId?: string;
-    previewUrl?: string;
-    downloadUrl?: string;
-    zipUrl?: string;
-    projectId?: number;
     [key: string]: any;
-  };
-  userData?: {
-    clerkId?: string;
-    email?: string;
-    name?: string;
   };
 }
 
@@ -40,13 +23,11 @@ interface MessageResponse {
   success: boolean;
   data?: {
     messageId: string;
-    sessionId: string;
+    projectId: number;
     userId: number;
     timestamp: string;
-    metadata?: any;
   };
   error?: string;
-  details?: string;
 }
 
 class MessageService {
@@ -67,7 +48,6 @@ class MessageService {
   // Initialize the service
   async initialize(): Promise<void> {
     try {
-      await this.messageDB.initializeStats();
       console.log('✅ Message service initialized');
     } catch (error) {
       console.error('❌ Failed to initialize message service:', error);
@@ -75,112 +55,58 @@ class MessageService {
     }
   }
 
-  // Dynamic user resolution with fallback mechanisms
-  private async resolveUserId(
-    providedUserId?: number,
-    sessionId?: string
-  ): Promise<number> {
-    try {
-      // Priority 1: Use provided userId if valid
-      if (providedUserId && await this.messageDB.validateUserExists(providedUserId)) {
-        return providedUserId;
-      }
-
-      // Priority 2: Get userId from session's most recent project
-      if (sessionId) {
-        const sessionProject = await this.messageDB.getProjectBySessionId(sessionId);
-        if (sessionProject && sessionProject.userId) {
-          return sessionProject.userId;
-        }
-      }
-
-      // Priority 3: Get most recent user from any project
-      const mostRecentUserId = await this.messageDB.getMostRecentUserId();
-      if (mostRecentUserId && await this.messageDB.validateUserExists(mostRecentUserId)) {
-        return mostRecentUserId;
-      }
-
-      // Priority 4: Create a new user with current timestamp
-      const newUserId = Date.now() % 1000000; // Use timestamp-based ID
-      await this.messageDB.ensureUserExists(newUserId, {
-        email: `user${newUserId}@buildora.dev`,
-        name: `User ${newUserId}`
-      });
-      
-      console.log(`✅ Created new user ${newUserId} as fallback`);
-      return newUserId;
-    } catch (error) {
-      console.error('❌ Failed to resolve user ID:', error);
-      throw new Error('Could not resolve or create user');
-    }
-  }
-
-  // Create message with enhanced user handling
+  // Create message - simplified for 4-table schema
   async createMessage(request: CreateMessageRequest): Promise<MessageResponse> {
     try {
       // Validate required fields
-      if (!request.content || !request.messageType) {
+      if (!request.content || !request.messageType || !request.projectId) {
         return {
           success: false,
-          error: 'Content and messageType are required'
+          error: 'Content, messageType, and projectId are required'
         };
       }
 
-      if (!['user', 'assistant', 'system'].includes(request.messageType)) {
+      // Get project to ensure it exists and get userId
+      const project = await this.messageDB.getProject(request.projectId);
+      if (!project) {
         return {
           success: false,
-          error: 'Invalid messageType. Must be user, assistant, or system'
+          error: `Project ${request.projectId} not found`
         };
       }
 
-      // Resolve user ID dynamically
-      let userId: number;
-      try {
-        userId = await this.resolveUserId(request.userId, request.sessionId);
-        console.log(`📝 Message creation - Resolved user ID: ${userId} (provided: ${request.userId})`);
-      } catch (error) {
-        return {
-          success: false,
-          error: 'Failed to resolve user for message creation',
-          details: error instanceof Error ? error.message : 'Unknown error'
-        };
-      }
+      const userId = request.userId || project.userId;
 
-      // Generate or use provided session ID
-      const sessionId = request.sessionId || this.sessionManager.generateSessionId();
+      // Ensure user exists
+      await this.messageDB.ensureUserExists(userId);
 
-      // Enhance metadata with resolved user and session information
-      const enhancedMetadata = {
+      // Prepare metadata
+      const metadata = {
         ...request.metadata,
-        sessionId: sessionId,
+        projectId: request.projectId,
+        sessionId: request.sessionId || project.lastSessionId,
         userId: userId,
-        timestamp: new Date().toISOString(),
-        serviceVersion: '2.0',
-        userResolutionStrategy: request.userId ? 'provided' : 'resolved'
+        timestamp: new Date().toISOString()
       };
 
       // Create message in database
       const messageId = await this.messageDB.addMessage(
         request.content,
         request.messageType,
-        enhancedMetadata
       );
 
-      // Update session activity
-      await this.sessionManager.updateSessionContext(sessionId, {
-        lastActivity: Date.now(),
-        lastMessageId: messageId,
-        userId: userId
+      // Update project last message time
+      await this.messageDB.updateProject(request.projectId, {
+        lastMessageAt: new Date(),
       });
 
       return {
         success: true,
         data: {
           messageId: messageId,
-          sessionId: sessionId,
+          projectId: request.projectId,
           userId: userId,
-          timestamp: enhancedMetadata.timestamp,
-          metadata: enhancedMetadata
+          timestamp: metadata.timestamp
         }
       };
 
@@ -188,13 +114,46 @@ class MessageService {
       console.error('❌ Failed to create message:', error);
       return {
         success: false,
-        error: 'Failed to create message',
-        details: error instanceof Error ? error.message : 'Unknown error'
+        error: 'Failed to create message'
       };
     }
   }
 
-  // Get user's message history
+  // Get messages for a project
+  async getProjectMessages(projectId: number, limit: number = 50): Promise<{
+    success: boolean;
+    data?: any[];
+    error?: string;
+  }> {
+    try {
+      return await this.messageDB.getProjectMessages(projectId, limit);
+    } catch (error) {
+      console.error('❌ Failed to get project messages:', error);
+      return {
+        success: false,
+        error: 'Failed to retrieve project messages'
+      };
+    }
+  }
+
+  // Get messages for a session
+  async getSessionMessages(sessionId: string): Promise<{
+    success: boolean;
+    data?: any[];
+    error?: string;
+  }> {
+    try {
+      return await this.messageDB.getSessionMessages(sessionId);
+    } catch (error) {
+      console.error('❌ Failed to get session messages:', error);
+      return {
+        success: false,
+        error: 'Failed to retrieve session messages'
+      };
+    }
+  }
+
+  // Get user's messages across all projects
   async getUserMessages(userId: number, limit: number = 50): Promise<{
     success: boolean;
     data?: any[];
@@ -202,35 +161,44 @@ class MessageService {
   }> {
     try {
       // Ensure user exists
-      const resolvedUserId = await this.resolveUserId(userId);
+      await this.messageDB.ensureUserExists(userId);
       
-      // Get recent conversation (filtered by user would require additional DB methods)
-      const conversation = await this.messageDB.getRecentConversation();
+      // Get all user's projects
+      const userProjects = await this.messageDB.getUserProjects(userId);
       
-      // Filter messages by user (basic implementation)
-      const userMessages = conversation.messages
-        .filter((msg: any) => {
-          try {
-            if (msg.reasoning) {
-              const metadata = JSON.parse(msg.reasoning);
-              return metadata.userId === resolvedUserId;
-            }
-            return false;
-          } catch {
-            return false;
-          }
-        })
+      if (userProjects.length === 0) {
+        return {
+          success: true,
+          data: []
+        };
+      }
+
+      // Get messages from all user's projects
+      const allMessages: any[] = [];
+      
+      for (const project of userProjects) {
+        const messagesResult = await this.messageDB.getProjectMessages(project.id, limit);
+        
+        if (messagesResult.success && messagesResult.data) {
+          // Add project info to each message
+          const messagesWithProject = messagesResult.data.map(msg => ({
+            ...msg,
+            projectId: project.id,
+            projectName: project.name
+          }));
+          
+          allMessages.push(...messagesWithProject);
+        }
+      }
+
+      // Sort by creation date (newest first) and limit
+      const sortedMessages = allMessages
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         .slice(0, limit);
 
       return {
         success: true,
-        data: userMessages.map((msg: any) => ({
-          id: msg.id,
-          content: msg.content,
-          messageType: msg.messageType,
-          createdAt: msg.createdAt,
-          metadata: msg.reasoning ? JSON.parse(msg.reasoning) : {}
-        }))
+        data: sortedMessages
       };
 
     } catch (error) {
@@ -242,60 +210,173 @@ class MessageService {
     }
   }
 
-  // Get session messages
-  async getSessionMessages(sessionId: string): Promise<{
+  // Get user's projects with message counts
+  async getUserProjects(userId: number): Promise<{
     success: boolean;
     data?: any[];
     error?: string;
   }> {
     try {
-      // Get session context to verify it exists
-      const sessionContext = await this.sessionManager.getSessionContext(sessionId);
+      const projects = await this.messageDB.getUserProjects(userId);
       
-      // Get recent conversation and filter by session
-      const conversation = await this.messageDB.getRecentConversation();
-      
-      const sessionMessages = conversation.messages
-        .filter((msg: any) => {
-          try {
-            if (msg.reasoning) {
-              const metadata = JSON.parse(msg.reasoning);
-              return metadata.sessionId === sessionId;
-            }
-            return false;
-          } catch {
-            return false;
-          }
-        });
-
       return {
         success: true,
-        data: sessionMessages.map((msg: any) => ({
-          id: msg.id,
-          content: msg.content,
-          messageType: msg.messageType,
-          createdAt: msg.createdAt,
-          metadata: msg.reasoning ? JSON.parse(msg.reasoning) : {}
+        data: projects.map(project => ({
+          id: project.id,
+          name: project.name,
+          description: project.description,
+          status: project.status,
+          messageCount: project.messageCount || 0,
+          lastMessageAt: project.lastMessageAt,
+          createdAt: project.createdAt,
+          updatedAt: project.updatedAt
         }))
       };
 
     } catch (error) {
-      console.error('❌ Failed to get session messages:', error);
+      console.error('❌ Failed to get user projects:', error);
       return {
         success: false,
-        error: 'Failed to retrieve session messages'
+        error: 'Failed to retrieve user projects'
       };
     }
   }
 
-  // Create user if they don't exist
+  // Create a new project
+  async createProject(projectData: {
+    userId: number;
+    name: string;
+    description: string;
+    projectType?: string;
+    framework?: string;
+    template?: string;
+    sessionId?: string;
+  }): Promise<{
+    success: boolean;
+    data?: { projectId: number };
+    error?: string;
+  }> {
+    try {
+      const projectId = await this.messageDB.createProject({
+        ...projectData,
+        status: 'active',
+        projectType: projectData.projectType || 'frontend',
+        framework: projectData.framework || 'react',
+        template: projectData.template || 'vite-react-ts',
+        deploymentUrl: '',
+        downloadUrl: '',
+        zipUrl: '',
+        buildId: '',
+        lastSessionId: projectData.sessionId || '',
+        lastMessageAt: new Date(),
+        messageCount: 0,
+        supabaseurl: '',
+        aneonkey: ''
+      });
+
+      return {
+        success: true,
+        data: { projectId }
+      };
+
+    } catch (error) {
+      console.error('❌ Failed to create project:', error);
+      return {
+        success: false,
+        error: 'Failed to create project'
+      };
+    }
+  }
+
+  // Update project details
+  async updateProject(projectId: number, updateData: {
+    name?: string;
+    description?: string;
+    status?: string;
+    deploymentUrl?: string;
+    downloadUrl?: string;
+    zipUrl?: string;
+    buildId?: string;
+    [key: string]: any;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    try {
+      await this.messageDB.updateProject(projectId, updateData);
+      
+      return { success: true };
+
+    } catch (error) {
+      console.error('❌ Failed to update project:', error);
+      return {
+        success: false,
+        error: 'Failed to update project'
+      };
+    }
+  }
+
+  // Get project details
+  async getProject(projectId: number): Promise<{
+    success: boolean;
+    data?: any;
+    error?: string;
+  }> {
+    try {
+      const project = await this.messageDB.getProject(projectId);
+      
+      if (!project) {
+        return {
+          success: false,
+          error: 'Project not found'
+        };
+      }
+
+      return {
+        success: true,
+        data: project
+      };
+
+    } catch (error) {
+      console.error('❌ Failed to get project:', error);
+      return {
+        success: false,
+        error: 'Failed to retrieve project'
+      };
+    }
+  }
+
+  // Get conversation for a project
+  async getProjectConversation(projectId: number): Promise<{
+    success: boolean;
+    data?: any;
+    error?: string;
+  }> {
+    try {
+      const conversation = await this.messageDB.getProjectConversation(projectId);
+      
+      return {
+        success: true,
+        data: conversation
+      };
+
+    } catch (error) {
+      console.error('❌ Failed to get project conversation:', error);
+      return {
+        success: false,
+        error: 'Failed to retrieve project conversation'
+      };
+    }
+  }
+
+  // Ensure user exists
   async ensureUser(userId: number, userData?: {
     clerkId?: string;
     email?: string;
     name?: string;
   }): Promise<{
     success: boolean;
-    data?: { userId: number; action: 'created' | 'existed' };
+    data?: { userId: number };
     error?: string;
   }> {
     try {
@@ -303,10 +384,7 @@ class MessageService {
       
       return {
         success: true,
-        data: {
-          userId: resolvedUserId,
-          action: resolvedUserId === userId ? 'existed' : 'created'
-        }
+        data: { userId: resolvedUserId }
       };
 
     } catch (error) {
@@ -318,236 +396,31 @@ class MessageService {
     }
   }
 
-  // Get message statistics for user
-  async getUserMessageStats(userId: number): Promise<{
-    success: boolean;
-    data?: {
-      totalMessages: number;
-      userMessages: number;
-      assistantMessages: number;
-      systemMessages: number;
-      recentActivity: Date | null;
-      modificationCount: number;
-    };
-    error?: string;
-  }> {
-    try {
-      // Ensure user exists
-      const resolvedUserId = await this.resolveUserId(userId);
-      
-      // Get conversation data
-      const conversation = await this.messageDB.getRecentConversation();
-      const modificationStats = await this.messageDB.getModificationStats();
-      
-      // Filter and count messages by user
-      const userMessages = conversation.messages.filter((msg: any) => {
-        try {
-          if (msg.reasoning) {
-            const metadata = JSON.parse(msg.reasoning);
-            return metadata.userId === resolvedUserId;
-          }
-          return false;
-        } catch {
-          return false;
-        }
-      });
-
-      const messagesByType = userMessages.reduce((acc: any, msg: any) => {
-        acc[msg.messageType] = (acc[msg.messageType] || 0) + 1;
-        return acc;
-      }, {});
-
-      const recentActivity = userMessages.length > 0 
-        ? userMessages[0].createdAt 
-        : null;
-
-      return {
-        success: true,
-        data: {
-          totalMessages: userMessages.length,
-          userMessages: messagesByType.user || 0,
-          assistantMessages: messagesByType.assistant || 0,
-          systemMessages: messagesByType.system || 0,
-          recentActivity,
-          modificationCount: modificationStats.totalModifications
-        }
-      };
-
-    } catch (error) {
-      console.error('❌ Failed to get user message stats:', error);
-      return {
-        success: false,
-        error: 'Failed to retrieve user message statistics'
-      };
-    }
-  }
-
-  // Delete messages for user (mark as deleted, don't actually delete)
-  async deleteUserMessages(userId: number, sessionId?: string): Promise<{
-    success: boolean;
-    data?: { deletedCount: number };
-    error?: string;
-  }> {
-    try {
-      // For now, we'll just clear all data since we don't have user-specific deletion
-      // In a full implementation, you'd add user-specific deletion methods
-      
-      console.log(`🗑️ Would delete messages for user ${userId} in session ${sessionId || 'all'}`);
-      
-      // This is a placeholder - implement user-specific message deletion
-      return {
-        success: true,
-        data: { deletedCount: 0 }
-      };
-
-    } catch (error) {
-      console.error('❌ Failed to delete user messages:', error);
-      return {
-        success: false,
-        error: 'Failed to delete user messages'
-      };
-    }
-  }
-
-  // Get conversation context for user
-  async getUserConversationContext(userId: number, sessionId?: string): Promise<{
-    success: boolean;
-    data?: string;
-    error?: string;
-  }> {
-    try {
-      // Ensure user exists
-      await this.resolveUserId(userId);
-      
-      // Get enhanced context
-      const context = await this.messageDB.getEnhancedContext();
-      
-      return {
-        success: true,
-        data: context
-      };
-
-    } catch (error) {
-      console.error('❌ Failed to get user conversation context:', error);
-      return {
-        success: false,
-        error: 'Failed to retrieve conversation context'
-      };
-    }
-  }
-
-  // Export conversation history for user
-  async exportUserConversation(userId: number, format: 'json' | 'csv' = 'json'): Promise<{
-    success: boolean;
-    data?: any;
-    error?: string;
-  }> {
-    try {
-      // Get user messages
-      const messagesResult = await this.getUserMessages(userId, 1000);
-      
-      if (!messagesResult.success || !messagesResult.data) {
-        return {
-          success: false,
-          error: 'Failed to retrieve user messages for export'
-        };
-      }
-
-      const messages = messagesResult.data;
-
-      if (format === 'csv') {
-        // Convert to CSV format
-        const csvHeader = 'id,content,messageType,createdAt,sessionId,userId\n';
-        const csvRows = messages.map(msg => {
-          const sessionId = msg.metadata?.sessionId || '';
-          const content = `"${msg.content.replace(/"/g, '""')}"`;
-          return `${msg.id},${content},${msg.messageType},${msg.createdAt},${sessionId},${userId}`;
-        }).join('\n');
-        
-        return {
-          success: true,
-          data: {
-            format: 'csv',
-            content: csvHeader + csvRows,
-            messageCount: messages.length,
-            exportedAt: new Date().toISOString()
-          }
-        };
-      }
-
-      // Default JSON format
-      return {
-        success: true,
-        data: {
-          format: 'json',
-          userId: userId,
-          messageCount: messages.length,
-          exportedAt: new Date().toISOString(),
-          messages: messages
-        }
-      };
-
-    } catch (error) {
-      console.error('❌ Failed to export user conversation:', error);
-      return {
-        success: false,
-        error: 'Failed to export conversation'
-      };
-    }
-  }
-
-  // Get service health and stats
+  // Get service health
   async getServiceHealth(): Promise<{
     success: boolean;
     data?: {
       status: 'healthy' | 'degraded' | 'unhealthy';
       database: boolean;
-      redis: boolean;
-      totalUsers: number;
-      totalMessages: number;
-      activeeSessions: number;
       uptime: string;
     };
     error?: string;
   }> {
     try {
-      // Check database health
+      // Simple health check - try to validate a user exists
       let dbHealth = false;
-      let totalMessages = 0;
       try {
-        const stats = await this.messageDB.getConversationStats();
+        await this.messageDB.validateUserExists(1);
         dbHealth = true;
-        totalMessages = stats?.totalMessageCount || 0;
       } catch {
         dbHealth = false;
       }
 
-      // Check Redis health (simplified)
-      let redisHealth = false;
-      let activeSessions = 0;
-      try {
-        // This would need to be implemented in RedisService
-        redisHealth = true;
-        activeSessions = 0; // Placeholder
-      } catch {
-        redisHealth = false;
-      }
-
-      // Get total users (would need additional method in DB)
-      const totalUsers = 0; // Placeholder
-
-      const status = dbHealth && redisHealth ? 'healthy' : 
-                    dbHealth || redisHealth ? 'degraded' : 'unhealthy';
-
       return {
         success: true,
         data: {
-          status,
+          status: dbHealth ? 'healthy' : 'unhealthy',
           database: dbHealth,
-          redis: redisHealth,
-          totalUsers,
-          totalMessages,
-          activeeSessions: activeSessions,
           uptime: process.uptime().toString()
         }
       };
@@ -561,40 +434,23 @@ class MessageService {
     }
   }
 
-  // Cleanup old data
-  async cleanupOldData(options: {
-    olderThanDays?: number;
-    userId?: number;
-    dryRun?: boolean;
-  } = {}): Promise<{
+  // Delete project (soft delete by updating status)
+  async deleteProject(projectId: number): Promise<{
     success: boolean;
-    data?: { messagesDeleted: number; sessionsCleared: number };
     error?: string;
   }> {
     try {
-      const { olderThanDays = 30, userId, dryRun = true } = options;
-      
-      console.log(`🧹 Cleanup requested: ${dryRun ? 'DRY RUN' : 'ACTUAL'} - older than ${olderThanDays} days`);
-      
-      if (userId) {
-        console.log(`👤 Cleanup for user: ${userId}`);
-      }
+      await this.messageDB.updateProject(projectId, {
+        status: 'deleted'
+      });
 
-      // This would implement actual cleanup logic
-      // For now, return placeholder results
-      return {
-        success: true,
-        data: {
-          messagesDeleted: dryRun ? 0 : 0,
-          sessionsCleared: dryRun ? 0 : 0
-        }
-      };
+      return { success: true };
 
     } catch (error) {
-      console.error('❌ Failed to cleanup old data:', error);
+      console.error('❌ Failed to delete project:', error);
       return {
         success: false,
-        error: 'Failed to cleanup old data'
+        error: 'Failed to delete project'
       };
     }
   }

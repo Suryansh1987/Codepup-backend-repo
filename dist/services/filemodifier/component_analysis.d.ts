@@ -1,3 +1,18 @@
+export interface ComponentTypeAnalysis {
+    type: 'page' | 'component';
+    name: string;
+    confidence: number;
+    reasoning: string;
+    targetDirectory: string;
+    fileName: string;
+    needsRouting: boolean;
+    description?: string;
+    category?: string;
+    fileExtension?: string;
+    needsFullContext?: boolean;
+    contextFiles?: string[];
+    contextKeywords?: string[];
+}
 export interface ElementNode {
     tag: string;
     isComponent: boolean;
@@ -31,23 +46,13 @@ export interface ProjectFile {
     isAppFile?: boolean;
     isRouteFile?: boolean;
 }
-export interface ComponentTypeAnalysis {
-    type: 'page' | 'component';
-    name: string;
-    confidence: number;
-    reasoning: string;
-    targetDirectory: string;
-    fileName: string;
-    needsRouting: boolean;
-    description?: string;
-    category?: string;
-    fileExtension?: string;
-}
 export interface GenerationResult {
     success: boolean;
     generatedContent: string;
     componentType: ComponentTypeAnalysis;
     elementTreeContext: string;
+    supabaseSchemaContext: string;
+    fullContextContent?: string;
     projectPatterns: {
         exportPattern: 'default' | 'named' | 'mixed';
         importPattern: 'default' | 'named' | 'mixed';
@@ -101,32 +106,37 @@ export declare class AnalysisAndGenerationEngine {
     private reactBasePath;
     private streamCallback?;
     private babelAnalyzer;
-    constructor(anthropic: any, reactBasePath: string);
+    private messageDB?;
+    constructor(anthropic: any, reactBasePath: string, messageDB?: any);
     setStreamCallback(callback: (message: string) => void): void;
     private streamUpdate;
-    /**
-     * STEP 1: COMPLETE ANALYSIS AND GENERATION
-     */
-    analyzeAndGenerate(userPrompt: string): Promise<GenerationResult>;
+    private getProjectStructureContext;
     private scanProjectFiles;
-    private analyzeComponentType;
+    private scanSupabaseMigrations;
+    private scanSupabaseDirectory;
+    private isSupabaseRelevantFile;
+    private determineSupabaseFileType;
+    private scanRootConfigFiles;
+    private scanMainProject;
+    private logScanResults;
+    private getSupabaseSchemaContext;
+    private extractTableInfo;
+    private analyzeComponentTypeWithContext;
+    private getFullContextFromFiles;
+    private generateComponentContentWithContext;
+    private detectBusinessType;
+    private getDesignInspiration;
+    private getBusinessSpecificTailwindPatterns;
+    analyzeAndGenerate(userPrompt: string, projectId?: number): Promise<GenerationResult>;
     private createElementTreeContext;
     private analyzeProjectPatterns;
     private extractExistingRoutes;
-    private generateComponentContent;
     private analyzeFilePatterns;
     private shouldSkipDirectory;
     private isRelevantFile;
     private isReactFile;
     private shouldSkipUIComponentFile;
     private determineFileType;
-    /**
-     * PUBLIC REFRESH METHOD
-     */
     refreshFileStructure(): Promise<void>;
-    /**
-     * GET PROJECT ANALYSIS SUMMARY
-     */
     getProjectAnalysisSummary(): Promise<string>;
-    private countElementTags;
 }

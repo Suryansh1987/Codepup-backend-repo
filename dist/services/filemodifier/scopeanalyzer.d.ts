@@ -73,9 +73,6 @@ export declare class ScopeAnalyzer {
      * Enhanced heuristic analysis with TAILWIND_CHANGE detection
      */
     private performHeuristicAnalysis;
-    /**
-     * AI CALL: Enhanced method determination with TAILWIND_CHANGE support and token tracking
-     */
     private determineModificationMethod;
     private parseMethodResponse;
     private extractSearchReplaceTerms;

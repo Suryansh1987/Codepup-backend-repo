@@ -13,11 +13,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatelessSessionManager = void 0;
-exports.initializeSessionRoutes = initializeSessionRoutes;
 // routes/session.ts - Session management routes
 const express_1 = __importDefault(require("express"));
 const router = express_1.default.Router();
-// Lightweight stateless helper using existing Redis service
 class StatelessSessionManager {
     constructor(redis) {
         this.redis = redis;
@@ -80,97 +78,4 @@ class StatelessSessionManager {
     }
 }
 exports.StatelessSessionManager = StatelessSessionManager;
-// Initialize session manager - this will be passed from main app
-let sessionManager;
-function initializeSessionRoutes(redis) {
-    sessionManager = new StatelessSessionManager(redis);
-    // Get session status
-    router.get("/status/:sessionId", (req, res) => __awaiter(this, void 0, void 0, function* () {
-        try {
-            const { sessionId } = req.params;
-            const sessionContext = yield sessionManager.getSessionContext(sessionId);
-            const cachedFiles = yield sessionManager.getCachedProjectFiles(sessionId);
-            const redisStats = yield redis.getStats();
-            if (sessionContext) {
-                res.json({
-                    success: true,
-                    data: {
-                        sessionId: sessionId,
-                        hasProject: !!sessionContext.projectSummary,
-                        projectSummary: sessionContext.projectSummary,
-                        cachedFileCount: Object.keys(cachedFiles).length,
-                        lastActivity: sessionContext.lastActivity,
-                        sessionAge: Date.now() - sessionContext.lastActivity,
-                        buildId: sessionContext.buildId,
-                        status: 'active',
-                        redisConnected: redisStats.connected
-                    }
-                });
-            }
-            else {
-                res.json({
-                    success: true,
-                    data: {
-                        sessionId: sessionId,
-                        hasProject: false,
-                        status: 'not_found',
-                        redisConnected: redisStats.connected
-                    }
-                });
-            }
-        }
-        catch (error) {
-            res.status(500).json({
-                success: false,
-                error: 'Failed to get session status'
-            });
-        }
-    }));
-    // Create new session
-    router.post("/create", (req, res) => __awaiter(this, void 0, void 0, function* () {
-        try {
-            const { userContext } = req.body;
-            const sessionId = sessionManager.generateSessionId(userContext);
-            const initialContext = {
-                buildId: '',
-                tempBuildDir: '',
-                lastActivity: Date.now()
-            };
-            yield sessionManager.saveSessionContext(sessionId, initialContext);
-            res.json({
-                success: true,
-                data: {
-                    sessionId: sessionId,
-                    message: 'Session created successfully'
-                }
-            });
-        }
-        catch (error) {
-            res.status(500).json({
-                success: false,
-                error: 'Failed to create session'
-            });
-        }
-    }));
-    // Delete session
-    router.delete("/:sessionId", (req, res) => __awaiter(this, void 0, void 0, function* () {
-        try {
-            const { sessionId } = req.params;
-            yield sessionManager.cleanup(sessionId);
-            res.json({
-                success: true,
-                data: {
-                    message: `Session ${sessionId} cleaned up successfully`
-                }
-            });
-        }
-        catch (error) {
-            res.status(500).json({
-                success: false,
-                error: 'Failed to cleanup session'
-            });
-        }
-    }));
-    return router;
-}
 //# sourceMappingURL=session.js.map
