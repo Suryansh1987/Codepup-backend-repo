@@ -44,7 +44,7 @@ exports.schema = schema;
 const sql = (0, serverless_1.neon)(process.env.DATABASE_URL);
 // Create database instance with unified schema
 exports.db = (0, neon_http_1.drizzle)(sql, {
-    schema: Object.assign({}, schema)
+    schema: Object.assign({}, schema),
 });
 exports.default = exports.db;
 //# sourceMappingURL=index.js.map

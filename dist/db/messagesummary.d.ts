@@ -47,8 +47,8 @@ export declare class DrizzleMessageHistoryDB {
         updatedAt: Date;
     }): Promise<void>;
     getProjectSecretsById(projectId: number): Promise<{
-        aneonkey: string;
-        supabaseurl: string;
+        aneonkey: string | null;
+        supabaseurl: string | null;
     }>;
     getProjectMessages(projectId: number, limit?: number): Promise<{
         success: boolean;

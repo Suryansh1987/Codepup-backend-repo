@@ -5395,9 +5395,9 @@ exports.pro5Enhanced3 = "You are an expert web developer creating modern website
     "- [ ] Migration includes trigger function\n" +
     "- [ ] Basic website functionality works (cart, auth, CRUD)\n" +
     "\n" +
-    "## Required Files Structure (FIXED):\n" +
+    "## Required Files Structure:\n" +
     "\n" +
-    "### MANDATORY Files (provide ALL in every response , you can other files as per need but at least these must br present):\n" +
+    "### MANDATORY Files (provide ALL in every response , you can add  other files as per need but at least these must be present in every response):\n" +
     "1. **tailwind.config.ts** - FIRST FILE with industry-appropriate solid colors\n" +
     "2. **src/App.tsx** - Main app with routes\n" +
     "3. **src/pages/Home.tsx** - Landing page (fetch data from DB)\n" +

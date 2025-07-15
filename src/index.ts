@@ -191,9 +191,8 @@ app.get("/health", async (req: Request, res: Response) => {
 app.use("/api/users", userRoutes);
 app.use("/api/projects", projectRoutes);
 app.use("/api/messages", messageRoutes);
-app.use("/api/chat", aiChatRoute);
+app.use("/api/design", aiChatRoute);
 
-// Enhanced route initialization with TokenTracker integration
 const enhanceRoutesWithTokenTracking = (
   routeHandler: any,
   routeName: string
