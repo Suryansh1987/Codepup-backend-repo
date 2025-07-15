@@ -41,8 +41,6 @@ class DrizzleMessageHistoryDB {
             }
         });
     }
-    // Enhanced getProjectStructure function for messageDB
-    // This function now retrieves complete project data including structure, metadata, and generated code
     getProjectStructure(projectId) {
         return __awaiter(this, void 0, void 0, function* () {
             try {

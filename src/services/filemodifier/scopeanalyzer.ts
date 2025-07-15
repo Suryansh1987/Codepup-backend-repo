@@ -432,6 +432,7 @@ Provide multiple search variations (case variations, partial matches, etc.)
 - Background color changes for the entire site
 - Color scheme or palette changes
 - Requests like:
+"Make the background PINK AND YELLOW tailwind scope"
   "change background color to blue"
   "make the primary color red"
   "change button colors to green" (without specifying which buttons)

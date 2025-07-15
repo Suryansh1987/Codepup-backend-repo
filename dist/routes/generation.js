@@ -46,7 +46,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.initializeGenerationRoutes = initializeGenerationRoutes;
-// routes/generation.ts - Simplified for 4-table schema
+// routes/generation.ts - Updated to store agent response structure in description
 const express_1 = __importDefault(require("express"));
 const uuid_1 = require("uuid");
 const adm_zip_1 = __importDefault(require("adm-zip"));
@@ -85,10 +85,9 @@ function sendStreamingUpdate(res, data) {
 }
 function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
     const urlManager = new url_manager_1.EnhancedProjectUrlManager(messageDB);
-    // Streaming endpoint
+    // Streaming endpoint with structure storage in description
     router.post("/stream", (req, res) => __awaiter(this, void 0, void 0, function* () {
-        const { prompt, projectId, supabaseToken, databaseUrl, supabaseUrl, supabaseAnonKey, userId: providedUserId, clerkId, // Add this to handle Clerk ID from frontend
-         } = req.body;
+        const { prompt, projectId, supabaseToken, databaseUrl, supabaseUrl, supabaseAnonKey, userId: providedUserId, clerkId, } = req.body;
         if (!prompt) {
             res.status(400).json({
                 success: false,
@@ -114,18 +113,16 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
             message: "Starting code generation...",
             percentage: 0,
         });
-        // UPDATED USER RESOLUTION - Use Clerk ID approach
+        // USER RESOLUTION with Clerk ID support
         let userId;
         try {
             if (clerkId) {
-                // Try to find user by Clerk ID first
                 const existingUser = yield messageDB.getUserByClerkId(clerkId);
                 if (existingUser) {
                     userId = existingUser.id;
                     console.log(`[${buildId}] Found user by Clerk ID: ${userId}`);
                 }
                 else {
-                    // Create user with Clerk ID if provided but not found
                     console.log(`[${buildId}] Creating new user with Clerk ID: ${clerkId}`);
                     userId = yield messageDB.createUserWithClerkId({
                         clerkId: clerkId,
@@ -136,21 +133,18 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 }
             }
             else if (providedUserId) {
-                // Fallback to old approach if no Clerk ID
                 const userExists = yield messageDB.validateUserExists(providedUserId);
                 if (userExists) {
                     userId = providedUserId;
                     console.log(`[${buildId}] Using provided user ID: ${userId}`);
                 }
                 else {
-                    // Create user with provided ID
                     yield messageDB.ensureUserExists(providedUserId);
                     userId = providedUserId;
                     console.log(`[${buildId}] Created user with ID: ${userId}`);
                 }
             }
             else {
-                // Last resort - create a fallback user
                 const fallbackUserId = Date.now() % 1000000;
                 yield messageDB.ensureUserExists(fallbackUserId);
                 userId = fallbackUserId;
@@ -169,7 +163,6 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
             res.end();
             return;
         }
-        // Rest of your code remains the same...
         console.log(`[${buildId}] Starting streaming generation for prompt: "${prompt.substring(0, 100)}..."`);
         const sourceTemplateDir = path_1.default.join(__dirname, "../../react-base");
         const tempBuildDir = path_1.default.join(__dirname, "../../temp-builds", buildId);
@@ -203,7 +196,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 try {
                     yield messageDB.updateProject(projectId, {
                         name: `Updated Project ${buildId.substring(0, 8)}`,
-                        description: `Updated: ${prompt.substring(0, 100)}...`,
+                        // DON'T update description during regeneration - it contains the original structure
                         status: "regenerating",
                         buildId: buildId,
                         lastSessionId: sessionId,
@@ -216,19 +209,19 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                     });
                     finalProjectId = projectId;
                     projectSaved = true;
-                    console.log(`[${buildId}] ✅ Updated existing project record: ${finalProjectId}`);
+                    console.log(`[${buildId}] ✅ Updated existing project record: ${finalProjectId} (description preserved)`);
                 }
                 catch (updateError) {
                     console.error(`[${buildId}] ❌ Failed to update existing project:`, updateError);
                 }
             }
             else {
-                console.log(`[${buildId}] 💾 Creating new project record...`);
+                console.log(`[${buildId}] 💾 Creating new project record (will update description with structure)...`);
                 try {
                     finalProjectId = yield messageDB.createProject({
                         userId,
                         name: `Generated Project ${buildId.substring(0, 8)}`,
-                        description: `React project generated from prompt: ${prompt.substring(0, 100)}...`,
+                        description: `React project generated from prompt: ${prompt.substring(0, 100)}...`, // Temporary description
                         status: "generating",
                         projectType: "generated",
                         deploymentUrl: "",
@@ -412,6 +405,29 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 codeFiles: processedFiles,
                 structure: parsedResult.structure,
             });
+            // Create enhanced project structure for description
+            const structureForDescription = JSON.stringify({
+                structure: parsedResult.structure,
+                summary: projectSummary,
+                validation: {
+                    fileStructure: validationResult.isValid,
+                    supabase: supabaseValidation.isValid,
+                    tailwind: tailwindConfig ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content) : false,
+                },
+                supabaseInfo: {
+                    filesFound: supabaseFiles.allSupabaseFiles.length,
+                    hasConfig: !!supabaseFiles.configFile,
+                    migrationCount: supabaseFiles.migrationFiles.length,
+                    hasSeedFile: !!supabaseFiles.seedFile,
+                },
+                metadata: {
+                    buildId: buildId,
+                    filesGenerated: parsedFiles.length,
+                    generatedAt: new Date().toISOString(),
+                    framework: "react",
+                    template: "vite-react-ts"
+                }
+            });
             // Update session context
             yield sessionManager.updateSessionContext(sessionId, {
                 projectSummary: {
@@ -462,17 +478,10 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                 message: "Deployment complete!",
                 percentage: 100,
             });
-            // Save assistant response to message history
+            // Save assistant response to message history with structure
             try {
-                const assistantMessageId = yield messageDB.addMessage(JSON.stringify({
-                    structure: parsedResult.structure,
-                    summary: projectSummary,
-                    validation: {
-                        fileStructure: validationResult.isValid,
-                        supabase: supabaseValidation.isValid,
-                        tailwind: tailwindConfig ? (0, newparser_1.validateTailwindConfig)(tailwindConfig.content) : false,
-                    },
-                }), "assistant", {
+                const assistantMessageId = yield messageDB.addMessage(structureForDescription, // Store the enhanced structure as message content
+                "assistant", {
                     projectId: finalProjectId,
                     sessionId: sessionId,
                     userId: userId,
@@ -482,10 +491,25 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                     downloadUrl: urls.downloadUrl,
                     zipUrl: zipUrl,
                 });
-                console.log(`[${buildId}] 💾 Saved enhanced summary to messageDB (ID: ${assistantMessageId})`);
+                console.log(`[${buildId}] 💾 Saved enhanced structure to messageDB (ID: ${assistantMessageId})`);
             }
             catch (dbError) {
-                console.warn(`[${buildId}] ⚠️ Failed to save summary to messageDB:`, dbError);
+                console.warn(`[${buildId}] ⚠️ Failed to save structure to messageDB:`, dbError);
+            }
+            // CRITICAL: Update project description with agent response structure (for new projects only)
+            if (finalProjectId && projectSaved && !projectId) {
+                try {
+                    console.log(`[${buildId}] 📝 Updating project description with agent response structure...`);
+                    yield messageDB.updateProject(finalProjectId, {
+                        description: structureForDescription, // Store the structure in description
+                        generatedCode: parsedResult.structure, // Also store in generatedCode field
+                        status: "ready", // Update status to ready after successful generation
+                    });
+                    console.log(`[${buildId}] ✅ Project description updated with structure data`);
+                }
+                catch (descriptionError) {
+                    console.error(`[${buildId}] ❌ Failed to update project description:`, descriptionError);
+                }
             }
             // Update project URLs using Enhanced URL Manager
             console.log(`[${buildId}] 💾 Using Enhanced URL Manager to save project URLs...`);
@@ -497,7 +521,9 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                         zipUrl: zipUrl,
                     }, userId, {
                         name: `Generated Project ${buildId.substring(0, 8)}`,
-                        description: `React project with enhanced validation`,
+                        // For new projects, the description will be the structure
+                        // For existing projects, keep the original description with structure
+                        description: !projectId ? structureForDescription : undefined, // Only update for new projects
                         framework: "react",
                         template: "vite-react-ts",
                     });
@@ -552,6 +578,7 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                     totalCharacters: totalLength,
                     chunksStreamed: Math.floor(totalLength / CHUNK_SIZE),
                 },
+                structureStoredInDescription: !projectId, // Indicates if structure was stored in description
             };
             res.write(`data: ${JSON.stringify({
                 type: "result",

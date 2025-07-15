@@ -323,11 +323,12 @@ function initializeModificationRoutes(anthropic, messageDB, redis, sessionManage
                                 zipUrl,
                             }, userId, {
                                 name: currentProject === null || currentProject === void 0 ? void 0 : currentProject.name,
+                                // Keep existing description - DON'T update during modification
                                 description: currentProject === null || currentProject === void 0 ? void 0 : currentProject.description,
                                 framework: (currentProject === null || currentProject === void 0 ? void 0 : currentProject.framework) || "react",
                                 template: (currentProject === null || currentProject === void 0 ? void 0 : currentProject.template) || "vite-react-ts",
                             });
-                            console.log(`[${buildId}] ✅ Updated project ${resolvedProjectId} with enhanced structure`);
+                            console.log(`[${buildId}] ✅ Updated project ${resolvedProjectId} with enhanced structure (description preserved)`);
                         }
                         catch (updateError) {
                             console.error(`[${buildId}] ❌ Failed to update project:`, updateError);
