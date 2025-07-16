@@ -1,4 +1,7 @@
-// scopeanalyzer.ts - Enhanced with TAILWIND_CHANGE scope and Token Tracking
+// ============================================================================
+// SIMPLIFIED SCOPE ANALYZER - CLAUDE-ONLY ANALYSIS
+// ============================================================================
+
 import Anthropic from '@anthropic-ai/sdk';
 import { ModificationScope } from './types';
 
@@ -10,7 +13,6 @@ interface TokenUsage {
   cache_read_input_tokens?: number | null;
   Usage?: number;
 }
-
 
 // Token Tracker class
 class TokenTracker {
@@ -168,46 +170,37 @@ export class ScopeAnalyzer {
   }
 
   /**
-   * Main scope analysis with TAILWIND_CHANGE support and token tracking
+   * Main scope analysis - Claude-only approach
    */
   async analyzeScope(
     prompt: string, 
-    projectSummary: string, 
+    projectSummary?: string, 
     conversationContext?: string,
     dbSummary?: string
   ): Promise<ModificationScope> {
-    this.streamUpdate('🤖 Starting enhanced AI-based method determination...');
+    this.streamUpdate('🤖 Starting Claude-only scope analysis...');
 
-    // First do a quick heuristic check
-    const heuristicResult = this.performHeuristicAnalysis(prompt);
-    this.streamUpdate(`💡 Heuristic analysis suggests: ${heuristicResult.suggestedScope} (confidence: ${heuristicResult.confidence}%)`);
-
-    // AI CALL: Determine modification method with improved prompt (with token tracking)
-    const method = await this.determineModificationMethod(
-      prompt, 
-      dbSummary || projectSummary, 
-      conversationContext,
-      heuristicResult
-    );
+    // Single AI call to determine modification method
+    const method = await this.determineModificationMethod(prompt, conversationContext);
 
     const finalScope: ModificationScope = {
       scope: method.scope,
       files: [], // No files selected here - will be determined by AST analysis later
       reasoning: method.reasoning,
       ...(method.scope === "COMPONENT_ADDITION" && {
-        componentName: this.extractComponentName(prompt),
-        componentType: this.determineComponentType(prompt),
+        componentName: method.componentName || this.extractComponentName(prompt),
+        componentType: method.componentType || this.determineComponentType(prompt),
         dependencies: [] // Dependencies will be determined later
       }),
       ...(method.scope === "TAILWIND_CHANGE" && {
-        colorChanges: this.extractColorChanges(prompt)
+        colorChanges: method.colorChanges || this.extractColorChanges(prompt)
       }),
       ...(method.scope === "TEXT_BASED_CHANGE" && method.textChangeAnalysis && {
         textChangeAnalysis: method.textChangeAnalysis
       })
     };
 
-    this.streamUpdate(`✅ Final method determination: ${finalScope.scope}`);
+    this.streamUpdate(`✅ Final scope determination: ${finalScope.scope}`);
     
     // Log token summary
     const tokenStats = this.tokenTracker.getStats();
@@ -217,260 +210,61 @@ export class ScopeAnalyzer {
   }
 
   /**
-   * Enhanced heuristic analysis with TAILWIND_CHANGE detection
+   * Single Claude call to determine modification method
    */
-  private performHeuristicAnalysis(prompt: string): {
-    suggestedScope: "FULL_FILE" | "TARGETED_NODES" | "COMPONENT_ADDITION" | "TAILWIND_CHANGE" | "TEXT_BASED_CHANGE";
-    confidence: number;
-    reasoning: string;
-  } {
-    const promptLower = prompt.toLowerCase();
-    
-
-    const textChangePatterns = [
-      /change\s+["']([^"']+)["']\s+to\s+["']([^"']+)["']/i,
-      /replace\s+["']([^"']+)["']\s+with\s+["']([^"']+)["']/i,
-      /update\s+["']([^"']+)["']\s+to\s+["']([^"']+)["']/i,
-      /change\s+(\w+)\s+to\s+(\w+)/i,
-      /replace\s+(\w+)\s+with\s+(\w+)/i,
-      /update.*text.*to/i,
-      /change.*heading.*to/i,
-      /change.*label.*to/i,
-      /update.*button.*text/i
-    ];
-
-    // Strong indicators for TAILWIND_CHANGE
-    const tailwindChangeKeywords = [
-      'change color', 'change background', 'change theme', 'change colors',
-      'make it red', 'make it blue', 'make it green', 'make background',
-      'color scheme', 'color palette', 'change to red', 'change to blue',
-      'button color', 'text color', 'background color', 'primary color',
-      'secondary color', 'accent color', 'theme color'
-    ];
-
-    // Strong indicators for COMPONENT_ADDITION
-    const componentAdditionKeywords = [
-      'create', 'add new', 'build new', 'make new', 'new component', 
-      'new page', 'new feature', 'add a', 'build a', 'create a'
-    ];
-    
-    // Strong indicators for TARGETED_NODES
-    const targetedKeywords = [
-      'change button', 'make button', 'this button', 'the button',
-      'change text', 'update text', 'modify text', 'this text',
-      'change label', 'update label', 'modify label', 'the label',
-      'one button', 'single button', 'specific', 'only', 'just change', 'just update'
-    ];
-
-    // Strong indicators for FULL_FILE
-    const fullFileKeywords = [
-      'redesign', 'overhaul', 'complete', 'entire', 'whole',
-      'layout', 'responsive', 'mobile', 'restructure', 'rearrange', 
-      'organize', 'reorder', 'multiple', 'several', 'all buttons', 
-      'all text', 'dark mode', 'light mode', 'header', 'footer', 'navigation'
-    ];
-
-    let textChangeScore = 0;
-    let tailwindScore = 0;
-    let targetedScore = 0;
-    let fullFileScore = 0;
-    let componentScore = 0;
-
-    // Score TEXT_BASED_CHANGE (highest priority for simple text replacements)
-    for (const pattern of textChangePatterns) {
-      if (pattern.test(prompt)) {
-        textChangeScore += 50; // Very high score for explicit text replacement patterns
-        break; // Only count once
-      }
-    }
-
-    // Additional text change indicators
-    if (promptLower.includes('change') && (promptLower.includes('text') || promptLower.includes('label') || promptLower.includes('heading'))) {
-      textChangeScore += 25;
-    }
-
-    // Check for non-specific color changes (key indicator for TAILWIND_CHANGE)
-    const hasColorKeyword = tailwindChangeKeywords.some(keyword => promptLower.includes(keyword));
-    const hasSpecificTarget = promptLower.match(/\b(this|that|the|specific)\s+(button|text|element|component)/);
-    const isGlobalColorChange = hasColorKeyword && !hasSpecificTarget;
-    
-    if (isGlobalColorChange) {
-      tailwindScore += 40; // High priority for global color changes
-      
-      // Additional scoring for tailwind-specific patterns
-      if (promptLower.match(/\b(primary|secondary|accent|theme)\s+(color|colors)/)) {
-        tailwindScore += 30;
-      }
-      
-      if (promptLower.match(/\b(change|make|set)\s+(background|bg)\s+(color|to)/)) {
-        tailwindScore += 25;
-      }
-      
-      if (promptLower.match(/\b(color\s+scheme|color\s+palette|theme\s+colors)/)) {
-        tailwindScore += 35;
-      }
-    }
-
-    // Score each category
-    for (const keyword of componentAdditionKeywords) {
-      if (promptLower.includes(keyword)) {
-        componentScore += 20;
-      }
-    }
-
-    for (const keyword of targetedKeywords) {
-      if (promptLower.includes(keyword)) {
-        targetedScore += 15;
-      }
-    }
-
-    for (const keyword of fullFileKeywords) {
-      if (promptLower.includes(keyword)) {
-        fullFileScore += 10;
-      }
-    }
-
-    // Additional scoring logic
-    const wordCount = prompt.split(' ').length;
-    if (wordCount <= 5 && textChangeScore === 0 && !isGlobalColorChange) {
-      targetedScore += 20; // Short requests are usually targeted
-    } else if (wordCount > 15) {
-      fullFileScore += 10; // Long requests often need full file changes
-    }
-
-    // Check for specific patterns
-    if (promptLower.match(/\b(one|single|specific|this|that)\s+(button|text|color|element)/)) {
-      targetedScore += 25;
-    }
-
-    if (promptLower.match(/\b(all|every|multiple|several)\s+(button|text|element)/)) {
-      fullFileScore += 20;
-    }
-
-    // Determine winner
-    const maxScore = Math.max(textChangeScore, tailwindScore, targetedScore, fullFileScore, componentScore);
-    let suggestedScope: "FULL_FILE" | "TARGETED_NODES" | "COMPONENT_ADDITION" | "TAILWIND_CHANGE" | "TEXT_BASED_CHANGE";
-    let confidence: number;
-    let reasoning: string;
-
-    if (textChangeScore === maxScore && textChangeScore > 0) {
-      suggestedScope = "TEXT_BASED_CHANGE";
-      confidence = Math.min(95, textChangeScore);
-      reasoning = "Simple text replacement pattern detected";
-    } else if (tailwindScore === maxScore && tailwindScore > 0) {
-      suggestedScope = "TAILWIND_CHANGE";
-      confidence = Math.min(95, tailwindScore);
-      reasoning = "Global color change detected - will modify tailwind.config.ts";
-    } else if (componentScore === maxScore && componentScore > 0) {
-      suggestedScope = "COMPONENT_ADDITION";
-      confidence = Math.min(95, componentScore);
-      reasoning = "Keywords suggest creating new component/page";
-    } else if (targetedScore === maxScore && targetedScore > 0) {
-      suggestedScope = "TARGETED_NODES";
-      confidence = Math.min(95, targetedScore);
-      reasoning = "Keywords suggest specific element modification";
-    } else {
-      suggestedScope = "FULL_FILE";
-      confidence = Math.min(95, Math.max(50, fullFileScore)); 
-      reasoning = fullFileScore > 0 ? "Keywords suggest comprehensive changes" : "Default for unclear requests";
-    }
-
-    return { suggestedScope, confidence, reasoning };
-  }
-
- 
   private async determineModificationMethod(
     prompt: string,
-    projectSummary: string,
-    conversationContext?: string,
-    heuristicResult?: any
+    conversationContext?: string
   ): Promise<{ 
     scope: "FULL_FILE" | "TARGETED_NODES" | "COMPONENT_ADDITION" | "TAILWIND_CHANGE" | "TEXT_BASED_CHANGE", 
-    reasoning: string, 
-    textChangeAnalysis?: { searchTerm: string, replacementTerm: string, searchVariations: string[] } 
+    reasoning: string,
+    componentName?: string,
+    componentType?: 'component' | 'page' | 'app',
+    colorChanges?: Array<{type: string; color: string; target?: string}>,
+    textChangeAnalysis?: { searchTerm: string, replacementTerm: string, searchVariations: string[] }
   }> {
     
     const methodPrompt = `
 **USER REQUEST:** "${prompt}"
 
-**PROJECT SUMMARY:**
-${projectSummary}
-
 ${conversationContext ? `**CONVERSATION CONTEXT:**\n${conversationContext}\n` : ''}
 
-${heuristicResult ? `**HEURISTIC ANALYSIS:**\nSuggested: ${heuristicResult.suggestedScope} (${heuristicResult.confidence}% confidence)\nReason: ${heuristicResult.reasoning}\n` : ''}
-
-**TASK:** Choose the MOST SPECIFIC modification method that can fulfill this request.
+**TASK:** Analyze the request and determine the MOST SPECIFIC modification method.
 
 **METHOD OPTIONS (in order of preference - choose the most specific that applies):**
 
-1-TEXT_BASED_CHANGE – For pure content replacement:
+1. **TEXT_BASED_CHANGE** – For pure content replacement:
 ✅ CHOOSE THIS IF the request involves:
+- Only changing text content (no styling, positioning, or visual changes)
+- Simple word/phrase replacements
+- Content updates without any visual modifications
+- Examples: "change 'Welcome' to 'Hello'", "replace 'Contact Us' with 'Get in Touch'"
 
-Only changing text content (no styling, positioning, or visual changes)
-Simple word/phrase replacements across the entire page/component
-Content updates without any visual modifications or specific element targeting
-Requests like:
-
-"change 'Welcome' to 'Hello'"
-"replace 'Contact Us' with 'Get in Touch'"
-"update all instances of 'Services' to 'Our Services'"
-"change 'Copyright 2024' to 'Copyright 2025'"
-
-
-
-For TEXT_BASED_CHANGE requests, you MUST:
-
-Extract exact search terms from the user's request
-Identify exact replacement terms the user wants
-Provide multiple search variations (case variations, partial matches, etc.)
-
-2. **TAILWIND_CHANGE** – For global color/theme changes without specific targets:
+2. **TAILWIND_CHANGE** – For global color/theme changes:
 ✅ CHOOSE THIS IF the request involves:
 - Global color changes without specifying exact elements
 - Theme color modifications (primary, secondary, accent colors)
 - Background color changes for the entire site
-- Color scheme or palette changes
-- Requests like:
-"Make the background PINK AND YELLOW tailwind scope"
-  "change background color to blue"
-  "make the primary color red"
-  "change button colors to green" (without specifying which buttons)
-  "update the color scheme"
-  "change theme colors"
-  "make it more colorful"
+- Examples: "change background color to blue", "make the primary color red"
 
-3-TARGETED_NODES – For specific element modifications:
+3. **TARGETED_NODES** – For specific element modifications:
 ✅ CHOOSE THIS IF the request targets:
+- Specific existing elements with any kind of modification
+- Descriptive targeting of particular UI components
+- Changes that specify WHERE the modification should happen
+- Examples: "change this button's color", "make that title larger", "update the footer"
 
-Specific existing elements with any kind of modification
-Descriptive targeting of particular UI components or locations
-Changes that specify WHERE the modification should happen
-Any styling, visual, or structural changes to specific elements
-Requests with descriptive targeting like:
-All button changes in targetted nodes only
-"change this button's color to blue"
-"make that title larger and bold"
-"update the footer background"
-"replace the header image"
-"in footer visit us today change location to bangalore,India"
-"make this specific text bold"
-"update the navigation menu links"
-"change the sidebar content"
-
-4. **COMPONENT_ADDITION** – For creating new UI elements or features or pages:
+4. **COMPONENT_ADDITION** – For creating new UI elements:
 ✅ CHOOSE THIS IF the request involves:
 - Adding new components, pages, or UI elements
 - Creating something that doesn't exist yet
-- Phrases like:
-  "add a button"
-  "create a card"
-  "make a new page"
-  "build user profile component"
+- Examples: "add a button", "create a card", "make a new page"
 
-5. **FULL_FILE** - For comprehensive changes (LAST RESORT):
+5. **FULL_FILE** – For comprehensive changes (LAST RESORT):
 ✅ CHOOSE THIS ONLY IF the request requires:
-
+- Multiple related changes across files
+- Complete restructuring or redesign
+- Examples: "redesign the entire page", "add dark mode"
 
 **DECISION PRIORITY:**
 1. If it's a simple TEXT replacement → TEXT_BASED_CHANGE
@@ -480,7 +274,8 @@ All button changes in targetted nodes only
 5. If it needs MULTIPLE changes → FULL_FILE
 
 **RESPOND WITH JSON:**
-For TEXT_BASED_CHANGE, include textChangeAnalysis:
+
+For TEXT_BASED_CHANGE:
 \`\`\`json
 {
   "scope": "TEXT_BASED_CHANGE",
@@ -488,50 +283,77 @@ For TEXT_BASED_CHANGE, include textChangeAnalysis:
   "textChangeAnalysis": {
     "searchTerm": "exact text to search for",
     "replacementTerm": "exact text to replace with",
-    "searchVariations": ["variation1", "variation2", "case sensitive", "CASE SENSITIVE"]
+    "searchVariations": ["variation1", "variation2", "UPPERCASE", "lowercase"]
   }
 }
 \`\`\`
 
-For other methods:
+For TAILWIND_CHANGE:
 \`\`\`json
 {
   "scope": "TAILWIND_CHANGE",
-  "reasoning": "This request involves global color changes that should be handled by modifying the tailwind.config.ts file to update theme colors."
+  "reasoning": "This request involves global color changes.",
+  "colorChanges": [
+    {"type": "background", "color": "blue"},
+    {"type": "primary", "color": "red"}
+  ]
+}
+\`\`\`
+
+For COMPONENT_ADDITION:
+\`\`\`json
+{
+  "scope": "COMPONENT_ADDITION",
+  "reasoning": "This request involves creating a new UI element.",
+  "componentName": "ExtractedComponentName",
+  "componentType": "component"
+}
+\`\`\`
+
+For TARGETED_NODES or FULL_FILE:
+\`\`\`json
+{
+  "scope": "TARGETED_NODES",
+  "reasoning": "This request targets specific existing elements."
 }
 \`\`\`
     `.trim();
 
     try {
-      this.streamUpdate('🤖 Sending method determination request to AI...');
+      this.streamUpdate('🤖 Sending scope determination request to Claude...');
       
       const response = await this.anthropic.messages.create({
         model: 'claude-3-5-sonnet-20240620',
-        max_tokens: 400,
+        max_tokens: 600,
         temperature: 0,
         messages: [{ role: 'user', content: methodPrompt }],
       });
 
       // Track token usage
-      this.tokenTracker.logUsage(response.usage, 'Method Determination');
+      this.tokenTracker.logUsage(response.usage, 'Scope Determination');
 
       const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-      return this.parseMethodResponse(text, heuristicResult);
+      return this.parseMethodResponse(text);
     } catch (error) {
-      this.streamUpdate(`❌ Method determination failed: ${error}`);
-      // Use heuristic result as fallback
-      const fallbackScope = heuristicResult?.suggestedScope || "FULL_FILE";
+      this.streamUpdate(`❌ Scope determination failed: ${error}`);
+      // Fallback to FULL_FILE
       return { 
-        scope: fallbackScope, 
-        reasoning: `API error - using heuristic fallback: ${heuristicResult?.reasoning || "Default to FULL_FILE"}` 
+        scope: "FULL_FILE", 
+        reasoning: `API error - using fallback: ${error}` 
       };
     }
   }
 
-  private parseMethodResponse(text: string, heuristicResult?: any): { 
+  /**
+   * Parse Claude's response for method determination
+   */
+  private parseMethodResponse(text: string): { 
     scope: "FULL_FILE" | "TARGETED_NODES" | "COMPONENT_ADDITION" | "TAILWIND_CHANGE" | "TEXT_BASED_CHANGE", 
-    reasoning: string, 
-    textChangeAnalysis?: { searchTerm: string, replacementTerm: string, searchVariations: string[] } 
+    reasoning: string,
+    componentName?: string,
+    componentType?: 'component' | 'page' | 'app',
+    colorChanges?: Array<{type: string; color: string; target?: string}>,
+    textChangeAnalysis?: { searchTerm: string, replacementTerm: string, searchVariations: string[] }
   } {
     try {
       // Extract JSON from the response
@@ -553,173 +375,34 @@ For other methods:
         reasoning: parsed.reasoning || "No reasoning provided"
       };
 
-      // Add textChangeAnalysis if present and scope is TEXT_BASED_CHANGE
+      // Add scope-specific data
       if (parsed.scope === "TEXT_BASED_CHANGE" && parsed.textChangeAnalysis) {
-        result.textChangeAnalysis = {
-          searchTerm: parsed.textChangeAnalysis.searchTerm || "",
-          replacementTerm: parsed.textChangeAnalysis.replacementTerm || "",
-          searchVariations: parsed.textChangeAnalysis.searchVariations || []
-        };
+        result.textChangeAnalysis = parsed.textChangeAnalysis;
+      }
+
+      if (parsed.scope === "TAILWIND_CHANGE" && parsed.colorChanges) {
+        result.colorChanges = parsed.colorChanges;
+      }
+
+      if (parsed.scope === "COMPONENT_ADDITION") {
+        result.componentName = parsed.componentName;
+        result.componentType = parsed.componentType;
       }
 
       return result;
     } catch (error) {
       this.streamUpdate(`❌ Failed to parse method response: ${error}`);
       
-      // Fallback to heuristic result or default
-      const fallbackScope = heuristicResult?.suggestedScope || "FULL_FILE";
+      // Fallback to FULL_FILE
       return { 
-        scope: fallbackScope, 
-        reasoning: `Parse error - using fallback: ${heuristicResult?.reasoning || "Default to FULL_FILE"}` 
+        scope: "FULL_FILE", 
+        reasoning: `Parse error - using fallback: ${error}` 
       };
     }
-  }
-
-  private async extractSearchReplaceTerms(prompt: string): Promise<{ searchTerm: string, replacementTerm: string, searchVariations: string[], confidence: number }> {
-    const extractionPrompt = `
-**USER REQUEST:** "${prompt}"
-
-**TASK:** Extract the exact search and replacement terms from this request.
-
-**INSTRUCTIONS:**
-1. Identify what text the user wants to FIND/SEARCH for
-2. Identify what text the user wants to REPLACE it with
-3. Generate variations of the search term (case variations, partial matches, etc.)
-4. Provide a confidence score (0-100) for the extraction accuracy
-
-**COMMON PATTERNS:**
-- "change 'X' to 'Y'" → search: "X", replace: "Y"
-- "update X to Y" → search: "X", replace: "Y"
-- "replace X with Y" → search: "X", replace: "Y"
-- "make the heading say 'Y'" → search: [infer from context], replace: "Y"
-
-**RESPOND WITH JSON:**
-\`\`\`json
-{
-  "searchTerm": "exact text to search for",
-  "replacementTerm": "exact text to replace with",
-  "searchVariations": [
-    "original term",
-    "Original Term",
-    "ORIGINAL TERM",
-    "original",
-    "partial match"
-  ],
-  "confidence": 95
-}
-\`\`\`
-    `.trim();
-
-    try {
-      this.streamUpdate('🤖 Extracting search/replace terms with AI...');
-      
-      const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20240620',
-        max_tokens: 300,
-        temperature: 0,
-        messages: [{ role: 'user', content: extractionPrompt }],
-      });
-
-      // Track token usage
-      this.tokenTracker.logUsage(response.usage, 'Search/Replace Term Extraction');
-
-      const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-      const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-      
-      if (!jsonMatch) {
-        throw new Error('No JSON found in extraction response');
-      }
-
-      const parsed = JSON.parse(jsonMatch[1]);
-      
-      return {
-        searchTerm: parsed.searchTerm || "",
-        replacementTerm: parsed.replacementTerm || "",
-        searchVariations: parsed.searchVariations || [],
-        confidence: parsed.confidence || 0
-      };
-    } catch (error) {
-      this.streamUpdate(`❌ Failed to extract search/replace terms: ${error}`);
-      return {
-        searchTerm: "",
-        replacementTerm: "",
-        searchVariations: [],
-        confidence: 0
-      };
-    }
-  }
-
-  private generateSearchVariations(searchTerm: string): string[] {
-    const variations = new Set<string>();
-    
-    // Add original term
-    variations.add(searchTerm);
-    
-    // Case variations
-    variations.add(searchTerm.toLowerCase());
-    variations.add(searchTerm.toUpperCase());
-    variations.add(searchTerm.charAt(0).toUpperCase() + searchTerm.slice(1).toLowerCase());
-    
-    // Remove quotes if present
-    const withoutQuotes = searchTerm.replace(/['"]/g, '');
-    if (withoutQuotes !== searchTerm) {
-      variations.add(withoutQuotes);
-      variations.add(withoutQuotes.toLowerCase());
-      variations.add(withoutQuotes.toUpperCase());
-    }
-    
-    // Partial matches (first and last words for multi-word terms)
-    const words = searchTerm.split(/\s+/);
-    if (words.length > 1) {
-      variations.add(words[0]);
-      variations.add(words[words.length - 1]);
-    }
-    
-    // Remove empty strings
-    return Array.from(variations).filter(v => v.trim().length > 0);
-  }
-
-  private suggestTargetFiles(searchTerm: string, projectSummary: string): string[] {
-    const targetFiles: string[] = [];
-    
-    // Common file patterns based on search term content
-    const lowerSearchTerm = searchTerm.toLowerCase();
-    
-    // Navigation/header content
-    if (lowerSearchTerm.includes('nav') || lowerSearchTerm.includes('menu') || lowerSearchTerm.includes('header')) {
-      targetFiles.push('components/Navigation.tsx', 'components/Header.tsx', 'components/Navbar.tsx');
-    }
-    
-    // Footer content
-    if (lowerSearchTerm.includes('footer') || lowerSearchTerm.includes('contact') || lowerSearchTerm.includes('copyright')) {
-      targetFiles.push('components/Footer.tsx');
-    }
-    
-    // Button text
-    if (lowerSearchTerm.includes('button') || lowerSearchTerm.includes('submit') || lowerSearchTerm.includes('click')) {
-      targetFiles.push('components/Button.tsx', 'components/Forms.tsx');
-    }
-    
-    // Page content
-    if (lowerSearchTerm.includes('welcome') || lowerSearchTerm.includes('home') || lowerSearchTerm.includes('landing')) {
-      targetFiles.push('pages/index.tsx', 'pages/Home.tsx', 'components/Hero.tsx');
-    }
-    
-    // About content
-    if (lowerSearchTerm.includes('about') || lowerSearchTerm.includes('company') || lowerSearchTerm.includes('team')) {
-      targetFiles.push('pages/about.tsx', 'pages/About.tsx');
-    }
-    
-    // Default fallback files
-    if (targetFiles.length === 0) {
-      targetFiles.push('pages/index.tsx', 'components/Layout.tsx', 'app/page.tsx');
-    }
-    
-    return targetFiles;
   }
 
   /**
-   * Extract color changes from prompt (for TAILWIND_CHANGE)
+   * Extract color changes from prompt (fallback method)
    */
   private extractColorChanges(prompt: string): Array<{type: string; color: string; target?: string}> {
     const changes: Array<{type: string; color: string; target?: string}> = [];
@@ -727,12 +410,9 @@ For other methods:
 
     // Color extraction patterns
     const colorPatterns = [
-      // Direct color mentions
       /(?:change|make|set)\s+(?:the\s+)?(?:background|bg)\s+(?:color\s+)?(?:to\s+)?([a-zA-Z]+|#[0-9a-fA-F]{3,6})/g,
       /(?:change|make|set)\s+(?:the\s+)?(?:primary|secondary|accent)\s+color\s+(?:to\s+)?([a-zA-Z]+|#[0-9a-fA-F]{3,6})/g,
-      /(?:change|make|set)\s+(?:the\s+)?(?:button|text)\s+color\s+(?:to\s+)?([a-zA-Z]+|#[0-9a-fA-F]{3,6})/g,
       /make\s+it\s+([a-zA-Z]+)/g,
-      /color\s+(?:scheme|palette)\s+(?:to\s+)?([a-zA-Z]+)/g
     ];
 
     colorPatterns.forEach(pattern => {
@@ -749,10 +429,6 @@ For other methods:
           type = 'secondary';
         } else if (match[0].includes('accent')) {
           type = 'accent';
-        } else if (match[0].includes('button')) {
-          type = 'button';
-        } else if (match[0].includes('text')) {
-          type = 'text';
         }
         
         changes.push({ type, color });
@@ -771,7 +447,7 @@ For other methods:
   }
 
   /**
-   * Extract component name from prompt (for COMPONENT_ADDITION)
+   * Extract component name from prompt (fallback method)
    */
   private extractComponentName(prompt: string): string {
     const patterns = [
@@ -792,7 +468,7 @@ For other methods:
   }
 
   /**
-   * Determine component type (for COMPONENT_ADDITION)
+   * Determine component type (fallback method)
    */
   private determineComponentType(prompt: string): 'component' | 'page' | 'app' {
     const promptLower = prompt.toLowerCase();
@@ -808,35 +484,9 @@ For other methods:
     return 'component';
   }
 
-  // Legacy methods for backward compatibility - enhanced with TAILWIND_CHANGE logic
-  async shouldUseFallbackSearch(prompt: string, initialFiles: string[]): Promise<boolean> {
-    return false;
-  }
-
-  determineModificationIntensity(prompt: string): 'FULL_FILE' | 'TARGETED_NODES' | 'TAILWIND_CHANGE' {
-    const heuristic = this.performHeuristicAnalysis(prompt);
-    if (heuristic.suggestedScope === 'TAILWIND_CHANGE') return 'TAILWIND_CHANGE';
-    return heuristic.suggestedScope === 'TARGETED_NODES' ? 'TARGETED_NODES' : 'FULL_FILE';
-  }
-
-  identifyDependencies(
-    componentType: 'component' | 'page' | 'app',
-    componentName: string,
-    existingFiles: string[]
-  ): string[] {
-    if (componentType === 'page') {
-      return existingFiles.filter(f => f.includes('App.tsx') || f.includes('App.jsx'));
-    }
-    return [];
-  }
-
-  validateScope(scope: ModificationScope, projectFiles: string[]): ModificationScope {
-    return {
-      ...scope,
-      files: []
-    };
-  }
-
+  /**
+   * Generate reasoning text for the scope decision
+   */
   generateReasoningText(
     prompt: string,
     scope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE',
@@ -845,7 +495,7 @@ For other methods:
     colorChanges?: Array<{type: string; color: string; target?: string}>,
     textChangeAnalysis?: { searchTerm: string; replacementTerm: string; searchVariations: string[] }
   ): string {
-    const baseReasoning = `Method determination: ${scope} approach selected for request: "${prompt}"`;
+    const baseReasoning = `Claude-determined scope: ${scope} approach selected for request: "${prompt}"`;
     
     if (scope === 'COMPONENT_ADDITION' && componentInfo) {
       return `${baseReasoning}. Will create new ${componentInfo.type}: ${componentInfo.name}`;
