@@ -11,9 +11,6 @@ export class RedisModificationSummary {
     this.sessionId = sessionId;
   }
 
-  /**
-   * Add a new modification change to the tracking
-   */
   async addChange(
     type: 'modified' | 'created' | 'updated',
     file: string,

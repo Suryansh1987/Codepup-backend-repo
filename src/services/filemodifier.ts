@@ -102,7 +102,7 @@ export class EnhancedUnrestrictedIntelligentFileModifier {
   // NEW: Two-Step Component Generation System (REPLACES componentGenerationSystem)
   private twoStepSystem: TwoStepComponentGenerationSystem;
 
-  constructor(anthropic: Anthropic, reactBasePath: string, sessionId: string, redisUrl?: string) {
+  constructor(anthropic: Anthropic, reactBasePath: string, sessionId: string, redisUrl?: string, messageDB?: any) {
     console.log('[DEBUG] EnhancedUnrestrictedIntelligentFileModifier constructor starting...');
     console.log(`[DEBUG] reactBasePath: ${reactBasePath}`);
     
@@ -149,7 +149,7 @@ TailwindChangeProcessor
     );
     // NEW: Initialize Two-Step Component Generation System (REPLACES componentGenerationSystem)
     console.log('[DEBUG] About to initialize TwoStepComponentGenerationSystem...');
-    this.twoStepSystem = new TwoStepComponentGenerationSystem(anthropic, reactBasePath);
+    this.twoStepSystem = new TwoStepComponentGenerationSystem(anthropic, reactBasePath,messageDB);
     console.log('[DEBUG] TwoStepComponentGenerationSystem initialized');
     
     console.log('[DEBUG] All processors initialized');
@@ -441,6 +441,7 @@ ${recentChanges.map(change => {
   async handleComponentAddition(
     prompt: string,
     scope: any,
+    projectId?: number,
     projectSummaryCallback?: (summary: string, prompt: string) => Promise<string | null>
   ): Promise<any> {
     
@@ -448,11 +449,12 @@ ${recentChanges.map(change => {
     
     try {
       // Use the new two-step system directly
-      const result: TwoStepResult = await this.twoStepSystem.generateComponent(prompt, {
-        skipIntegration: false,
-        dryRun: false,
-        verbose: true
-      });
+   const result: TwoStepResult = await this.twoStepSystem.generateComponent(prompt, {
+  skipIntegration: false,
+  dryRun: false,
+  verbose: true,
+  projectId: projectId
+});
 
       if (result.success) {
         // Extract files from both steps
@@ -571,7 +573,8 @@ ${recentChanges.map(change => {
       skipIntegration?: boolean;
       dryRun?: boolean;
       verbose?: boolean;
-    }
+    },
+    projectId?: number
   ): Promise<TwoStepResult> {
     this.streamUpdate('🚀 Direct Two-Step Generation Access...');
     
@@ -580,7 +583,7 @@ ${recentChanges.map(change => {
       await this.initializeSession();
       
       // Use the two-step system directly
-      const result = await this.twoStepSystem.generateComponent(prompt, options);
+      const result = await this.twoStepSystem.generateComponent(prompt, options,projectId);
       
       // Update cache if successful
       if (result.success) {
@@ -875,6 +878,7 @@ async processModification(
     prompt: string, 
     conversationContext?: string,
     dbSummary?: string,
+    projectId?: number ,
     projectSummaryCallback?: (summary: string, prompt: string) => Promise<string | null>
   ): Promise<ModificationResult> {
     const startTime = Date.now();
@@ -1028,7 +1032,7 @@ async processModification(
             console.log('[DEBUG] About to call handleComponentAddition() with two-step workflow');
             
             try {
-              modificationResult = await this.handleComponentAddition(prompt, scope, projectSummaryCallback);
+              modificationResult = await this.handleComponentAddition(prompt, scope,projectId);
               console.log(`[DEBUG] handleComponentAddition() completed with success: ${modificationResult.success}`);
               return modificationResult;
             } catch (componentError) {
@@ -1080,7 +1084,7 @@ async processModification(
             console.log(`[DEBUG] Unknown scope: ${scope.scope}, using two-step fallback`);
             
             try {
-              modificationResult = await this.handleComponentAddition(prompt, scope, projectSummaryCallback);
+              modificationResult = await this.handleComponentAddition(prompt, scope, projectId);
               console.log(`[DEBUG] Two-step fallback completed with success: ${modificationResult.success}`);
               return modificationResult;
             } catch (fallbackError) {
