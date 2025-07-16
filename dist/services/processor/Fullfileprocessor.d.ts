@@ -36,14 +36,14 @@ export declare class FullFileProcessor {
     constructor(anthropic: any, tokenTracker: TokenTracker, basePath?: string);
     setStreamCallback(callback: (message: string) => void): void;
     private streamUpdate;
-    processFullFileModification(prompt: string, folderNameOrProjectFiles: string | Map<string, ProjectFile>, streamCallbackOrBasePath?: ((message: string) => void) | string, legacyStreamCallback?: (message: string) => void): Promise<{
+    processFullFileModification(prompt: string, folderNameOrProjectFiles: string | Map<string, ProjectFile>, streamCallbackOrBasePath?: ((message: string) => void) | string, legacyStreamCallback?: (message: string) => void, messageDB?: any, projectId?: number): Promise<{
         success: boolean;
         changes?: ChangeRecord[];
         modifiedFiles?: string[];
     }>;
     private applyModificationsWithUpgradedMethod;
     /**
-     * Helper methods (enhanced)
+     * Helper methods (same as original)
      */
     private resolveProjectPath;
     private loadProjectFiles;
@@ -51,14 +51,14 @@ export declare class FullFileProcessor {
     private isRelevantFile;
     private isMainFile;
     private determineFileType;
+    /**
+     * Legacy compatibility methods (same signatures)
+     */
     process(prompt: string, projectFiles: Map<string, ProjectFile>, reactBasePath: string, streamCallback: (message: string) => void): Promise<{
         success: boolean;
         changes?: ChangeRecord[];
         modifiedFiles?: string[];
     }>;
-    /**
-     * Legacy method for compatibility
-     */
     handleFullFileModification(prompt: string, projectFiles: Map<string, ProjectFile>, modificationSummary?: any): Promise<boolean>;
 }
 export {};

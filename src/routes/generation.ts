@@ -470,7 +470,7 @@ export function initializeGenerationRoutes(
         }
       });
 
-      // Update session context
+   
       await sessionManager.updateSessionContext(sessionId, {
         projectSummary: {
           structure: parsedResult.structure,

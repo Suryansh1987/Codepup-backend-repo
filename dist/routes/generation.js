@@ -428,7 +428,6 @@ function initializeGenerationRoutes(anthropic, messageDB, sessionManager) {
                     template: "vite-react-ts"
                 }
             });
-            // Update session context
             yield sessionManager.updateSessionContext(sessionId, {
                 projectSummary: {
                     structure: parsedResult.structure,
