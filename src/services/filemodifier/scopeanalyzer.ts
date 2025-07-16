@@ -448,7 +448,7 @@ Descriptive targeting of particular UI components or locations
 Changes that specify WHERE the modification should happen
 Any styling, visual, or structural changes to specific elements
 Requests with descriptive targeting like:
-
+All button changes in targetted nodes only
 "change this button's color to blue"
 "make that title larger and bold"
 "update the footer background"
@@ -470,11 +470,7 @@ Requests with descriptive targeting like:
 
 5. **FULL_FILE** - For comprehensive changes (LAST RESORT):
 ✅ CHOOSE THIS ONLY IF the request requires:
-- Multiple related changes across a file
-- Layout restructuring or major design changes
-- Changes that impact file structure or organization
-- change in navbar and add navigation of cart page to carticon this is also in full file
--change the navbar and connect the profile page to user icon
+
 
 **DECISION PRIORITY:**
 1. If it's a simple TEXT replacement → TEXT_BASED_CHANGE

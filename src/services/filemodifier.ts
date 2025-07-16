@@ -20,7 +20,7 @@ import { EnhancedLLMRipgrepProcessor } from './processor/text-modifier';
 // Import the NEW TailwindChangeProcessor
 import { TailwindChangeProcessor } from './processor/Tailwindprocessor';
 
-import { ASTAnalyzer } from './processor/Astanalyzer';
+
 import { ProjectAnalyzer } from './processor/projectanalyzer';
 import { FullFileProcessor } from './processor/Fullfileprocessor';
 import { TargetedNodesProcessor } from './processor/TargettedNodes';
@@ -90,7 +90,6 @@ export class EnhancedUnrestrictedIntelligentFileModifier {
   private fallbackMechanism: FallbackMechanism;
 
   private Textbasedprocessor: EnhancedLLMRipgrepProcessor;
-  private astAnalyzer: ASTAnalyzer;
   private projectAnalyzer: ProjectAnalyzer;
   private fullFileProcessor: FullFileProcessor;
   private targetedNodesProcessor: TargetedNodesProcessor;
@@ -118,7 +117,6 @@ export class EnhancedUnrestrictedIntelligentFileModifier {
 
     // Initialize existing processors
     this.tokenTracker = new TokenTracker();
-    this.astAnalyzer = new ASTAnalyzer();
     this.projectAnalyzer = new ProjectAnalyzer(reactBasePath);
     
     console.log('[DEBUG] About to initialize FullFileProcessor...');
@@ -756,7 +754,7 @@ ${recentChanges.map(change => {
     }
   }
 
-  private async handleTargetedModification(prompt: string): Promise<boolean> {
+private async handleTargetedModification(prompt: string): Promise<boolean> {
     console.log('[DEBUG] handleTargetedModification: Starting...');
     
     try {
@@ -783,7 +781,7 @@ ${recentChanges.map(change => {
             this.streamUpdate(message);
           }
         );
-        console.log('[DEBUG] handleTargetedModification: processTargetedModification completed with result:', result);
+        console.log('[DEBUG] handleTargetedModification: processTargetedModification completed with result keys:', Object.keys(result || {}));
         
       } else if (processor.process) {
         console.log('[DEBUG] handleTargetedModification: Calling process method...');
@@ -796,7 +794,7 @@ ${recentChanges.map(change => {
             this.streamUpdate(message);
           }
         );
-        console.log('[DEBUG] handleTargetedModification: process method completed with result:', result);
+        console.log('[DEBUG] handleTargetedModification: process method completed with result keys:', Object.keys(result || {}));
         
       } else if (processor.handleTargetedModification) {
         console.log('[DEBUG] handleTargetedModification: Calling handleTargetedModification method...');
@@ -809,7 +807,7 @@ ${recentChanges.map(change => {
             this.streamUpdate(message);
           }
         );
-        console.log('[DEBUG] handleTargetedModification: handleTargetedModification method completed with result:', result);
+      
         
       } else {
         console.log('[DEBUG] handleTargetedModification: No suitable method found');
@@ -823,17 +821,17 @@ ${recentChanges.map(change => {
         console.log('[DEBUG] handleTargetedModification: Result keys:', Object.keys(result));
         
         if (result.updatedProjectFiles) {
-          console.log('[DEBUG] handleTargetedModification: Updating project files with updatedProjectFiles...');
+          console.log('[DEBUG] handleTargetedModification: Updating project files, count:', result.updatedProjectFiles?.size || 0);
           await this.setProjectFiles(result.updatedProjectFiles);
         } else if (result.projectFiles) {
-          console.log('[DEBUG] handleTargetedModification: Updating project files with projectFiles...');
+          console.log('[DEBUG] handleTargetedModification: Updating project files, count:', result.projectFiles?.size || 0);
           await this.setProjectFiles(result.projectFiles);
         }
 
         if (result.changes && Array.isArray(result.changes)) {
           console.log(`[DEBUG] handleTargetedModification: Processing ${result.changes.length} changes...`);
           for (const change of result.changes) {
-            console.log('[DEBUG] handleTargetedModification: Processing change:', change);
+            console.log('[DEBUG] handleTargetedModification: Processing change type:', change.type, 'file:', change.file);
             await this.addModificationChange(
               change.type || 'modified',
               change.file,
@@ -866,13 +864,7 @@ ${recentChanges.map(change => {
     }
   }
 
-  // ==============================================================
-  // MAIN PROCESSING METHOD (enhanced with TWO-STEP support)
-  // ==============================================================
 
-// ==============================================================
-// MAIN PROCESSING METHOD (enhanced with TWO-STEP support and better error handling)
-// ==============================================================
 
 async processModification(
     prompt: string, 

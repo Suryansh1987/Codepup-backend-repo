@@ -6,7 +6,6 @@ import { promises as fs } from 'fs';
 import { join, basename } from 'path';
 import { ProjectFile, PageInfo } from '../filemodifier/types';
 import { DependencyManager } from '../filemodifier/dependancy';
-import { ASTAnalyzer } from './Astanalyzer';
 import { TokenTracker } from '../../utils/TokenTracer';
 
 export class ProjectAnalyzer {

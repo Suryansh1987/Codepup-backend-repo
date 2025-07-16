@@ -5,7 +5,7 @@ import traverse from '@babel/traverse';
 import * as crypto from 'crypto';
 
 // ============================================================================
-// INTERFACES
+// COMPLETE INTERFACES
 // ============================================================================
 
 interface ProjectFile {
@@ -24,6 +24,8 @@ interface AnalysisNode {
   startLine: number;
   endLine: number;
   displayText?: string;
+  props?: Record<string, any>;
+  isInteractive?: boolean;
 }
 
 interface ModificationNode extends AnalysisNode {
@@ -33,22 +35,13 @@ interface ModificationNode extends AnalysisNode {
   fullAttributes: Record<string, any>;
   startPos: number;
   endPos: number;
-  // FIXED: Added enhanced positioning
   lineBasedStart: number;
   lineBasedEnd: number;
   originalCode: string;
   codeHash: string;
   contextBefore: string;
   contextAfter: string;
-  // NEW: Parent context for better positioning
   parentNode?: {
-    id: string;
-    tagName: string;
-    className?: string;
-    startLine: number;
-    endLine: number;
-  };
-  grandParentNode?: {
     id: string;
     tagName: string;
     className?: string;
@@ -77,7 +70,6 @@ interface AnalysisResponse {
     reason: string;
   }>;
   reasoning: string;
-  confidence: number;
 }
 
 interface TokenUsage {
@@ -120,12 +112,12 @@ class TokenTracker {
 }
 
 // ============================================================================
-// IMPROVED AST ANALYZER - FIXED POSITIONING
+// COMPLETE DYNAMIC AST ANALYZER
 // ============================================================================
 
-class TwoPhaseASTAnalyzer {
+class DynamicASTAnalyzer {
   private streamCallback?: (message: string) => void;
-  private nodeCache = new Map<string, any[]>(); // Cache parsed nodes by file
+  private nodeCache = new Map<string, any[]>();
 
   setStreamCallback(callback: (message: string) => void): void {
     this.streamCallback = callback;
@@ -137,40 +129,24 @@ class TwoPhaseASTAnalyzer {
     }
   }
 
-  // FIXED: More robust node ID generation using SHA-256
   private createStableNodeId(node: any, content: string, index: number): string {
     const tagName = node.openingElement?.name?.name || 'unknown';
     const startLine = node.loc?.start.line || 1;
-    const endLine = node.loc?.end.line || 1;
     const startColumn = node.loc?.start.column || 0;
     
-    // Get more context for uniqueness
-    let codeContext = '';
+    let context = '';
     if (node.start !== undefined && node.end !== undefined) {
       const start = Math.max(0, node.start - 10);
       const end = Math.min(content.length, node.end + 10);
-      codeContext = content.substring(start, end);
+      context = content.substring(start, end);
     }
     
-    // Extract className for additional uniqueness
-    let className = '';
-    if (node.openingElement?.attributes) {
-      for (const attr of node.openingElement.attributes) {
-        if (attr.type === 'JSXAttribute' && attr.name?.name === 'className' && attr.value?.type === 'StringLiteral') {
-          className = attr.value.value;
-          break;
-        }
-      }
-    }
-    
-    // Create deterministic hash
-    const hashInput = `${tagName}_${startLine}_${startColumn}_${endLine}_${index}_${className}_${codeContext.replace(/\s+/g, ' ').trim()}`;
+    const hashInput = `${tagName}_${startLine}_${startColumn}_${index}_${context.replace(/\s+/g, ' ').trim()}`;
     const hash = crypto.createHash('sha256').update(hashInput).digest('hex');
     return hash.substring(0, 12);
   }
 
-  // FIXED: Enhanced position calculation with multiple fallback strategies
-  private calculateAccuratePosition(node: any, content: string): {
+  private calculatePosition(node: any, content: string): {
     startPos: number;
     endPos: number;
     lineBasedStart: number;
@@ -186,10 +162,10 @@ class TwoPhaseASTAnalyzer {
     const startColumn = node.loc?.start?.column || 0;
     const endColumn = node.loc?.end?.column || 0;
 
-    // Strategy 1: Calculate line-based positions (most reliable for multi-line)
+    // Calculate line-based positions
     let lineBasedStart = 0;
     for (let i = 0; i < startLine && i < lines.length; i++) {
-      lineBasedStart += lines[i].length + 1; // +1 for newline
+      lineBasedStart += lines[i].length + 1;
     }
     lineBasedStart += startColumn;
 
@@ -199,7 +175,7 @@ class TwoPhaseASTAnalyzer {
     }
     lineBasedEnd += endColumn;
 
-    // Strategy 2: Use AST positions if available and valid
+    // Use AST positions if available
     let startPos = lineBasedStart;
     let endPos = lineBasedEnd;
     
@@ -210,7 +186,7 @@ class TwoPhaseASTAnalyzer {
       endPos = node.end;
     }
 
-    // Validate and extract code
+    // Extract code
     let originalCode = '';
     if (startPos >= 0 && endPos > startPos && endPos <= content.length) {
       originalCode = content.substring(startPos, endPos);
@@ -218,27 +194,14 @@ class TwoPhaseASTAnalyzer {
       originalCode = content.substring(lineBasedStart, lineBasedEnd);
       startPos = lineBasedStart;
       endPos = lineBasedEnd;
-    } else {
-      // Fallback to line extraction
-      if (startLine >= 0 && endLine < lines.length && endLine >= startLine) {
-        originalCode = lines.slice(startLine, endLine + 1).join('\n');
-        // Recalculate positions for this fallback
-        lineBasedStart = 0;
-        for (let i = 0; i < startLine; i++) {
-          lineBasedStart += lines[i].length + 1;
-        }
-        lineBasedEnd = lineBasedStart + originalCode.length;
-        startPos = lineBasedStart;
-        endPos = lineBasedEnd;
-      }
     }
 
-    // Get context for more accurate replacement
+    // Get context
     const contextSize = 50;
     const contextBefore = content.substring(Math.max(0, startPos - contextSize), startPos);
     const contextAfter = content.substring(endPos, Math.min(content.length, endPos + contextSize));
 
-    // Generate hash for verification
+    // Generate hash
     const codeHash = crypto.createHash('md5').update(originalCode).digest('hex');
 
     return {
@@ -253,9 +216,80 @@ class TwoPhaseASTAnalyzer {
     };
   }
 
-  // FIXED: Cache and reuse parsed AST nodes with parent tracking
+  // UNIVERSAL: Extract elements from any file
+  private extractElementData(node: any, content: string): {
+    displayText?: string;
+    props: Record<string, any>;
+    isInteractive: boolean;
+  } {
+    const props: Record<string, any> = {};
+    let isInteractive = false;
+
+    // Extract all props
+    if (node.openingElement?.attributes) {
+      for (const attr of node.openingElement.attributes) {
+        if (attr.type === 'JSXAttribute' && attr.name?.name) {
+          const propName = attr.name.name;
+          
+          if (attr.value?.type === 'StringLiteral') {
+            props[propName] = attr.value.value;
+          } else if (attr.value?.type === 'JSXExpressionContainer') {
+            if (attr.value.expression?.type === 'Identifier') {
+              props[propName] = `{${attr.value.expression.name}}`;
+            } else {
+              props[propName] = '{...}';
+            }
+          } else if (!attr.value) {
+            props[propName] = true;
+          }
+
+          // Detect interactivity
+          if (propName.startsWith('on') || propName === 'href' || propName === 'to') {
+            isInteractive = true;
+          }
+        }
+      }
+    }
+
+    // Extract all text content
+    let displayText: string | undefined;
+    if (node.children) {
+      const extractText = (child: any, depth: number = 0): string => {
+        if (!child || depth > 5) return '';
+        
+        if (child.type === 'JSXText') {
+          return child.value.trim();
+        } else if (child.type === 'JSXExpressionContainer') {
+          if (child.expression?.type === 'StringLiteral') {
+            return child.expression.value;
+          } else if (child.expression?.type === 'Identifier') {
+            return `{${child.expression.name}}`;
+          }
+        } else if (child.type === 'JSXElement' && child.children) {
+          return child.children
+            .map((grandChild: any) => extractText(grandChild, depth + 1))
+            .filter((text: string) => text.trim().length > 0)
+            .join(' ');
+        }
+        return '';
+      };
+
+      const allText = node.children
+        .map((child: any) => extractText(child))
+        .filter((text: string) => text.trim().length > 0)
+        .join(' ')
+        .trim();
+
+      if (allText) {
+        displayText = allText.length > 100 ? allText.substring(0, 97) + '...' : allText;
+      }
+    }
+
+    return { displayText, props, isInteractive };
+  }
+
   private parseAndCacheNodes(filePath: string, content: string): any[] {
-    const cacheKey = `${filePath}_${content.length}_${content.substring(0, 100)}`;
+    const cacheKey = `${filePath}_${content.length}`;
     
     if (this.nodeCache.has(cacheKey)) {
       return this.nodeCache.get(cacheKey)!;
@@ -264,14 +298,12 @@ class TwoPhaseASTAnalyzer {
     try {
       const ast = parse(content, {
         sourceType: 'module',
-        plugins: ['jsx', 'typescript', 'decorators-legacy'],
+        plugins: ['jsx', 'typescript'],
         ranges: true
       });
 
       const nodes: any[] = [];
       let nodeIndex = 0;
-
-      // Track parent hierarchy during traversal
       const parentStack: any[] = [];
 
       traverse(ast, {
@@ -280,79 +312,40 @@ class TwoPhaseASTAnalyzer {
             const node = path.node;
             nodeIndex++;
 
-            // Extract tag name
             let tagName = 'unknown';
             if (node.openingElement?.name?.type === 'JSXIdentifier') {
               tagName = node.openingElement.name.name;
             } else if (node.openingElement?.name?.type === 'JSXMemberExpression') {
-              // Handle something like React.Fragment
               tagName = `${node.openingElement.name.object.name}.${node.openingElement.name.property.name}`;
             }
 
-            // Skip UI library components
-            if (tagName.match(/^(Button|Input|Card|Dialog|Select|Textarea|Checkbox|Badge|Avatar|Alert|Toast|Tooltip|Popover|Tabs|Sheet|Form|Label)$/)) {
-              return;
-            }
-
-            // Create consistent ID
             const stableId = this.createStableNodeId(node, content, nodeIndex);
 
-            // Extract parent information
+            // Get parent info
             let parentInfo = null;
-            let grandParentInfo = null;
-
             if (parentStack.length > 0) {
               const parent = parentStack[parentStack.length - 1];
               parentInfo = {
                 id: parent._id,
                 tagName: parent._tagName,
-                className: parent._className,
                 startLine: parent.loc?.start.line || 1,
                 endLine: parent.loc?.end.line || 1
               };
-
-              if (parentStack.length > 1) {
-                const grandParent = parentStack[parentStack.length - 2];
-                grandParentInfo = {
-                  id: grandParent._id,
-                  tagName: grandParent._tagName,
-                  className: grandParent._className,
-                  startLine: grandParent.loc?.start.line || 1,
-                  endLine: grandParent.loc?.end.line || 1
-                };
-              }
             }
 
-            // Extract className for parent tracking
-            let className: string | undefined;
-            if (node.openingElement?.attributes) {
-              for (const attr of node.openingElement.attributes) {
-                if (attr.type === 'JSXAttribute' && attr.name?.name === 'className' && attr.value?.type === 'StringLiteral') {
-                  className = attr.value.value;
-                  break;
-                }
-              }
-            }
-
-            // Store enhanced node info
             const enhancedNode = {
               ...node,
               _id: stableId,
               _tagName: tagName,
-              _className: className,
               _index: nodeIndex,
               _filePath: filePath,
-              _parentInfo: parentInfo,
-              _grandParentInfo: grandParentInfo
+              _parentInfo: parentInfo
             };
 
             nodes.push(enhancedNode);
-
-            // Add current node to parent stack
             parentStack.push(enhancedNode);
           },
           exit: () => {
-            // Remove current node from parent stack when exiting
             parentStack.pop();
           }
         }
@@ -362,357 +355,123 @@ class TwoPhaseASTAnalyzer {
       return nodes;
 
     } catch (error) {
-      this.streamUpdate(`❌ AST parsing failed for ${filePath}: ${error}`);
+      this.streamUpdate(`❌ Parsing failed: ${error}`);
       return [];
     }
   }
 
-  // FIXED: Extract nodes once and store both minimal and full data
-  private extractAllNodeData(filePath: string, projectFiles: Map<string, ProjectFile>): {
-    minimalNodes: AnalysisNode[];
-    fullNodes: Map<string, ModificationNode>;
-  } {
-    if (!filePath.match(/\.(tsx?|jsx?)$/i) || this.shouldExcludeFile(filePath)) {
-      return { minimalNodes: [], fullNodes: new Map() };
+  // PHASE 1: Extract minimal data for analysis
+  extractMinimalNodes(filePath: string, projectFiles: Map<string, ProjectFile>): AnalysisNode[] {
+    if (!filePath.match(/\.(tsx?|jsx?)$/i)) {
+      return [];
     }
 
     const file = projectFiles.get(filePath);
-    if (!file || this.isUILibraryFile(file.content)) {
-      return { minimalNodes: [], fullNodes: new Map() };
+    if (!file) {
+      return [];
     }
 
     const nodes = this.parseAndCacheNodes(filePath, file.content);
     const minimalNodes: AnalysisNode[] = [];
-    const fullNodes = new Map<string, ModificationNode>();
 
     for (const node of nodes) {
-      // Extract attributes
-      let className: string | undefined;
-      const fullAttributes: Record<string, any> = {};
-      
-      if (node.openingElement?.attributes) {
-        for (const attr of node.openingElement.attributes) {
-          if (attr.type === 'JSXAttribute' && attr.name?.name) {
-            const propName = attr.name.name;
-            
-            if (propName === 'className' && attr.value?.type === 'StringLiteral') {
-              className = attr.value.value;
-              fullAttributes[propName] = attr.value.value;
-            } else if (attr.value) {
-              if (attr.value.type === 'StringLiteral') {
-                fullAttributes[propName] = attr.value.value;
-              } else if (attr.value.type === 'JSXExpressionContainer') {
-                const start = attr.value.start || 0;
-                const end = attr.value.end || 0;
-                if (start >= 0 && end > start && end <= file.content.length) {
-                  fullAttributes[propName] = file.content.substring(start, end);
-                }
-              }
-            }
-          }
-        }
-      }
+      const { displayText, props, isInteractive } = this.extractElementData(node, file.content);
 
-      // ENHANCED: Extract display text with deep nesting support
-      let displayText: string | undefined;
-      if (node.children) {
-        let textContent = '';
-        
-        // Enhanced text extraction with deep recursion
-        const extractTextFromNode = (child: any, depth: number = 0): string => {
-          if (!child || depth > 5) return ''; // Prevent infinite recursion
-          
-          if (child.type === 'JSXText') {
-            return child.value.trim();
-          } else if (child.type === 'JSXExpressionContainer') {
-            if (child.expression?.type === 'StringLiteral') {
-              return child.expression.value;
-            } else if (child.expression?.type === 'TemplateLiteral') {
-              // Handle template literals like `Hello ${name}`
-              return child.expression.quasis?.map((q: any) => q.value?.raw || '').join('') || '';
-            } else if (child.expression?.type === 'Identifier') {
-              // Handle variables - use the variable name as hint
-              return `{${child.expression.name}}`;
-            }
-          } else if (child.type === 'JSXElement') {
-            // ENHANCED: Handle nested elements like <a>, <span>, <div> inside buttons
-            const childTagName = child.openingElement?.name?.name || '';
-            let nestedText = '';
-            
-            if (child.children) {
-              nestedText = child.children
-                .map((grandChild: any) => extractTextFromNode(grandChild, depth + 1))
-                .filter((text: string) => text.trim().length > 0)
-                .join(' ')
-                .trim();
-            }
-            
-            // For link tags (a, Link), make the nested text more visible
-            if (childTagName === 'a' || childTagName === 'Link') {
-              return nestedText ? `[Link: ${nestedText}]` : '[Link]';
-            }
-            
-            // For span tags inside buttons, extract the text directly
-            if (childTagName === 'span' || childTagName === 'div') {
-              return nestedText;
-            }
-            
-            // For other nested elements, return their text with tag hint
-            if (nestedText) {
-              return `[${childTagName}: ${nestedText}]`;
-            }
-            
-            return nestedText;
-          }
-          return '';
-        };
-
-        // Extract text from all children
-        for (const child of node.children) {
-          const childText = extractTextFromNode(child);
-          if (childText) {
-            textContent += ' ' + childText;
-          }
-        }
-        
-        textContent = textContent.trim();
-        
-        // Extract meaningful text for better identification
-        if (textContent) {
-          // SPECIAL CASE: For buttons and interactive elements, send full text (no truncation)
-          if (node._tagName.toLowerCase() === 'button' || 
-              (node._tagName === 'Button') || 
-              (className && className.includes('button')) ||
-              node._tagName.toLowerCase() === 'a' ||
-              (node._tagName === 'Link')) {
-            displayText = textContent; // Full text for interactive elements
-          } else {
-            // For other elements, take first few words
-            const words = textContent.split(/\s+/).filter(w => w.length > 0);
-            if (words.length > 0) {
-              // Take first 2-3 meaningful words, max 30 characters
-              const meaningfulWords = words
-                .filter(word => 
-                  word.length > 1 && 
-                  !word.match(/^[{}\[\]().,;:!?]$/) &&
-                  !word.match(/^(the|and|or|but|in|on|at|to|for|of|with|by)$/i)
-                )
-                .slice(0, 3);
-              
-              if (meaningfulWords.length > 0) {
-                displayText = meaningfulWords.join(' ');
-                if (displayText.length > 30) {
-                  displayText = displayText.substring(0, 27) + '...';
-                }
-              } else if (words.length > 0) {
-                // Fallback to first few words even if not "meaningful"
-                displayText = words.slice(0, 2).join(' ');
-                if (displayText.length > 30) {
-                  displayText = displayText.substring(0, 27) + '...';
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // ENHANCED: Also extract text from common attributes for better identification
-      if (!displayText && node.openingElement?.attributes) {
-        for (const attr of node.openingElement.attributes) {
-          if (attr.type === 'JSXAttribute' && attr.name?.name && attr.value?.type === 'StringLiteral') {
-            const attrName = attr.name.name;
-            const attrValue = attr.value.value;
-            
-            // Extract meaningful text from common attributes
-            if (attrName === 'placeholder' || attrName === 'title' || attrName === 'alt' || 
-                attrName === 'aria-label' || attrName === 'href') {
-              // For buttons and links, include full attribute text too
-              if (node._tagName.toLowerCase() === 'button' || 
-                  (node._tagName === 'Button') || 
-                  (className && className.includes('button')) ||
-                  node._tagName.toLowerCase() === 'a' ||
-                  (node._tagName === 'Link')) {
-                displayText = `[${attrName}:${attrValue}]`; // Full attribute for interactive elements
-              } else {
-                const words = attrValue.split(/\s+/).slice(0, 2);
-                displayText = `[${attrName}:${words.join(' ')}]`;
-                if (displayText.length > 30) {
-                  displayText = displayText.substring(0, 27) + '...';
-                }
-              }
-              break;
-            }
-          }
-        }
-      }
-
-      // ENHANCED: For elements without text, use tag-specific hints
-      if (!displayText) {
-        if (node._tagName === 'input' && fullAttributes.type) {
-          displayText = `[${fullAttributes.type}Input]`;
-        } else if (node._tagName.toLowerCase() === 'button' || node._tagName === 'Button') {
-          displayText = '[Button]';
-        } else if (node._tagName.toLowerCase() === 'a' || node._tagName === 'Link') {
-          displayText = '[Link]';
-        } else if (node._tagName === 'img' && fullAttributes.alt) {
-          displayText = `[img:${fullAttributes.alt.substring(0, 15)}]`;
-        } else if (className) {
-          // Use className as hint
-          const classWords = className.split(/[\s-_]+/).slice(0, 2);
-          displayText = `[.${classWords.join('-')}]`;
-        }
-      }
-
-      // Create minimal node for analysis
       const minimalNode: AnalysisNode = {
         id: node._id,
         tagName: node._tagName,
-        className,
+        className: props.className,
         startLine: node.loc?.start.line || 1,
         endLine: node.loc?.end.line || 1,
-        displayText
-      };
-
-      // Calculate enhanced positioning for full node
-      const positionData = this.calculateAccuratePosition(node, file.content);
-
-      // Create full node for modification with parent context
-      const fullNode: ModificationNode = {
-        ...minimalNode,
-        startColumn: node.loc?.start.column || 0,
-        endColumn: node.loc?.end.column || 0,
-        fullCode: positionData.originalCode,
-        fullAttributes,
-        startPos: positionData.startPos,
-        endPos: positionData.endPos,
-        lineBasedStart: positionData.lineBasedStart,
-        lineBasedEnd: positionData.lineBasedEnd,
-        originalCode: positionData.originalCode,
-        codeHash: positionData.codeHash,
-        contextBefore: positionData.contextBefore,
-        contextAfter: positionData.contextAfter,
-        // NEW: Add parent context
-        parentNode: node._parentInfo,
-        grandParentNode: node._grandParentInfo
+        displayText,
+        props,
+        isInteractive
       };
 
       minimalNodes.push(minimalNode);
-      fullNodes.set(node._id, fullNode);
     }
 
-    return { minimalNodes, fullNodes };
-  }
-
-  // PHASE 1: Extract minimal nodes for analysis
-  extractMinimalNodes(filePath: string, projectFiles: Map<string, ProjectFile>): AnalysisNode[] {
-    const { minimalNodes } = this.extractAllNodeData(filePath, projectFiles);
     return minimalNodes;
   }
 
-  // Store full nodes data for each file
+  // Store full node cache
   private fileNodeCache = new Map<string, Map<string, ModificationNode>>();
 
-  // PHASE 2: Extract full nodes for modification using cached data
+  // PHASE 2: Extract full nodes for modification
   extractFullNodes(filePath: string, nodeIds: string[], projectFiles: Map<string, ProjectFile>): ModificationNode[] {
     const file = projectFiles.get(filePath);
     if (!file) {
-      this.streamUpdate(`❌ File not found: ${filePath}`);
       return [];
     }
 
-    this.streamUpdate(`🔍 Extracting full details for nodes: ${nodeIds.join(', ')}`);
-
-    // Check if we have cached full nodes for this file
     let fullNodesMap = this.fileNodeCache.get(filePath);
     
     if (!fullNodesMap) {
-      // Generate both minimal and full nodes
-      const { minimalNodes, fullNodes } = this.extractAllNodeData(filePath, projectFiles);
-      this.fileNodeCache.set(filePath, fullNodes);
-      fullNodesMap = fullNodes;
-      this.streamUpdate(`📦 Cached ${fullNodes.size} full nodes for ${filePath}`);
+      fullNodesMap = new Map();
+      const nodes = this.parseAndCacheNodes(filePath, file.content);
+
+      for (const node of nodes) {
+        const { displayText, props, isInteractive } = this.extractElementData(node, file.content);
+        const positionData = this.calculatePosition(node, file.content);
+
+        const fullNode: ModificationNode = {
+          id: node._id,
+          tagName: node._tagName,
+          className: props.className,
+          startLine: node.loc?.start.line || 1,
+          endLine: node.loc?.end.line || 1,
+          startColumn: node.loc?.start.column || 0,
+          endColumn: node.loc?.end.column || 0,
+          displayText,
+          props,
+          isInteractive,
+          fullCode: positionData.originalCode,
+          fullAttributes: props,
+          startPos: positionData.startPos,
+          endPos: positionData.endPos,
+          lineBasedStart: positionData.lineBasedStart,
+          lineBasedEnd: positionData.lineBasedEnd,
+          originalCode: positionData.originalCode,
+          codeHash: positionData.codeHash,
+          contextBefore: positionData.contextBefore,
+          contextAfter: positionData.contextAfter,
+          parentNode: node._parentInfo
+        };
+
+        fullNodesMap.set(node._id, fullNode);
+      }
+
+      this.fileNodeCache.set(filePath, fullNodesMap);
     }
 
-    // Extract the requested nodes
-    const modificationNodes: ModificationNode[] = [];
-    const foundIds: string[] = [];
-    const missingIds: string[] = [];
-
+    // Return requested nodes
+    const result: ModificationNode[] = [];
     for (const nodeId of nodeIds) {
-      const fullNode = fullNodesMap.get(nodeId);
-      if (fullNode) {
-        modificationNodes.push(fullNode);
-        foundIds.push(nodeId);
-      } else {
-        missingIds.push(nodeId);
+      const node = fullNodesMap.get(nodeId);
+      if (node) {
+        result.push(node);
       }
     }
 
-    this.streamUpdate(`✅ Found ${foundIds.length}/${nodeIds.length} target nodes`);
-
-    if (missingIds.length > 0) {
-      this.streamUpdate(`⚠️ Missing nodes: ${missingIds.join(', ')}`);
-      
-      // Debug: Show available IDs
-      const availableIds = Array.from(fullNodesMap.keys());
-      this.streamUpdate(`🔍 Available node IDs: ${availableIds.slice(0, 10).join(', ')}${availableIds.length > 10 ? '...' : ''}`);
-    }
-
-    // Log successful extractions
-    for (const node of modificationNodes) {
-      this.streamUpdate(`   - ${node.id}: ${node.tagName} (${node.originalCode.length} chars, hash: ${node.codeHash.substring(0, 8)})`);
-    }
-
-    return modificationNodes;
+    return result;
   }
 
-  // Generate compact tree for AI analysis with parent context
+  // Generate compact tree for AI
   generateCompactTree(files: FileStructureInfo[]): string {
     return files.map(file => {
       const nodeList = file.nodes.map(node => {
         const className = node.className ? `.${node.className.split(' ')[0]}` : '';
-        const displayText = node.displayText ? `"${node.displayText}"` : '';
+        const text = node.displayText ? `"${node.displayText}"` : '';
+        const hasHandlers = Object.keys(node.props || {}).some(key => key.startsWith('on')) ? '{interactive}' : '';
+        const lines = `(L${node.startLine}${node.endLine !== node.startLine ? `-${node.endLine}` : ''})`;
         
-        // Enhanced format: ID:TAG.CLASS"TEXT"(LINES) - more readable
-        const classDisplay = className || '';
-        const textDisplay = displayText || '';
-        const lineInfo = node.startLine === node.endLine ? `L${node.startLine}` : `L${node.startLine}-${node.endLine}`;
-        
-        return `${node.id}:${node.tagName}${classDisplay}${textDisplay}(${lineInfo})`;
+        return `${node.id}:${node.tagName}${className}${text}${hasHandlers}${lines}`;
       }).join('\n    ');
       
       return `📁 ${file.filePath}:\n    ${nodeList}`;
     }).join('\n\n');
   }
 
-  private shouldExcludeFile(filePath: string): boolean {
-    const excludePatterns = [
-      /src[\/\\]components?[\/\\]ui[\/\\]/i,
-      /components?[\/\\]ui[\/\\]/i,
-      /ui[\/\\](button|input|card|dialog|select|form)\.tsx?$/i,
-      /\.d\.ts$/,
-      /test\.|spec\./,
-      /node_modules[\/\\]/,
-      /dist[\/\\]/,
-      /build[\/\\]/
-    ];
-
-    return excludePatterns.some(pattern => pattern.test(filePath));
-  }
-
-  private isUILibraryFile(content: string): boolean {
-    const indicators = [
-      /@\/lib\/utils/,
-      /class-variance-authority/,
-      /React\.forwardRef.*displayName/,
-      /@radix-ui\//,
-      /styled-components/
-    ];
-
-    return indicators.some(pattern => pattern.test(content));
-  }
-
-  // Clear cache when needed
   clearCache(): void {
     this.nodeCache.clear();
     this.fileNodeCache.clear();
@@ -720,20 +479,20 @@ class TwoPhaseASTAnalyzer {
 }
 
 // ============================================================================
-// MAIN TWO-PHASE PROCESSOR WITH FIXED MODIFICATION LOGIC
+// COMPLETE TWO-PHASE AST PROCESSOR
 // ============================================================================
 
 export class TwoPhaseASTProcessor {
   private anthropic: any;
   private tokenTracker: TokenTracker;
-  private astAnalyzer: TwoPhaseASTAnalyzer;
+  private astAnalyzer: DynamicASTAnalyzer;
   private streamCallback?: (message: string) => void;
   private reactBasePath: string;
 
   constructor(anthropic: any, reactBasePath?: string) {
     this.anthropic = anthropic;
     this.tokenTracker = new TokenTracker();
-    this.astAnalyzer = new TwoPhaseASTAnalyzer();
+    this.astAnalyzer = new DynamicASTAnalyzer();
     this.reactBasePath = (reactBasePath || process.cwd()).replace(/builddora/g, 'buildora');
   }
 
@@ -773,7 +532,7 @@ export class TwoPhaseASTProcessor {
       this.reactBasePath = reactBasePath.replace(/builddora/g, 'buildora');
     }
 
-    // Clear cache at start - CRITICAL FIX
+    // Clear cache at start
     this.astAnalyzer.clearCache();
 
     try {
@@ -890,7 +649,7 @@ USER REQUEST: "${userRequest}"
 PROJECT TREE:
 ${compactTree}
 
-FORMAT: nodeId:tagName.className"displayText"(LineStart-LineEnd)
+FORMAT: nodeId:tagName.className"displayText"(LineNumbers)
 
 INSTRUCTIONS:
 1. Identify which specific nodes need modification for the user request
@@ -908,8 +667,7 @@ RESPONSE FORMAT (JSON):
       "reason": "Description of needed change"
     }
   ],
-  "reasoning": "Overall explanation",
-  "confidence": 85
+  "reasoning": "Overall explanation"
 }
 
 ANALYSIS:`;
@@ -930,14 +688,13 @@ ANALYSIS:`;
       if (jsonMatch) {
         const analysis = JSON.parse(jsonMatch[0]);
         
-        this.streamUpdate(`📊 Analysis: ${analysis.needsModification ? 'NEEDS CHANGES' : 'NO CHANGES'} (${analysis.confidence}%)`);
+        this.streamUpdate(`📊 Analysis: ${analysis.needsModification ? 'NEEDS CHANGES' : 'NO CHANGES'}`);
         this.streamUpdate(`🎯 Target nodes: ${(analysis.targetNodes || []).length}`);
         
         return {
           needsModification: analysis.needsModification || false,
           targetNodes: analysis.targetNodes || [],
-          reasoning: analysis.reasoning || 'Analysis completed',
-          confidence: analysis.confidence || 50
+          reasoning: analysis.reasoning || 'Analysis completed'
         };
       } else {
         throw new Error('No valid JSON response from AI');
@@ -948,8 +705,7 @@ ANALYSIS:`;
       return {
         needsModification: false,
         targetNodes: [],
-        reasoning: `Analysis error: ${error}`,
-        confidence: 0
+        reasoning: `Analysis error: ${error}`
       };
     }
   }
@@ -989,7 +745,10 @@ ANALYSIS:`;
         this.streamUpdate(`🔍 Extracting full nodes for ${fileTargets.length} targets in ${displayPath}...`);
         
         const nodeIds = fileTargets.map(t => t.nodeId);
-        const fullNodes = this.astAnalyzer.extractFullNodes(actualFileKey, nodeIds, projectFiles);
+      this.streamUpdate(`🔍 Extracting full nodes for ${fileTargets.length} targets...`);
+const fullNodes = this.astAnalyzer.extractFullNodes(actualFileKey, nodeIds, projectFiles);
+this.streamUpdate(`📊 DEBUG: Found ${fullNodes.length} full nodes for IDs: ${nodeIds.join(', ')}`);
+
         
         if (fullNodes.length === 0) {
           results.push({ 
@@ -1002,10 +761,10 @@ ANALYSIS:`;
         }
 
         this.streamUpdate(`✅ Extracted ${fullNodes.length} full nodes`);
-
+       
         // Generate modifications
         const modifications = await this.generateModifications(fullNodes, fileTargets, userRequest, displayPath);
-
+        this.streamUpdate(`📊 DEBUG: Generating modifications for ${fullNodes.length} nodes`);
         if (modifications.length === 0) {
           results.push({ 
             filePath: displayPath, 
@@ -1016,9 +775,9 @@ ANALYSIS:`;
           continue;
         }
 
-        // FIXED: Apply modifications with enhanced positioning
+        // Apply modifications
         const applyResult = await this.applyModificationsFixed(modifications, actualFileKey, projectFiles, fullNodes);
-        
+        this.streamUpdate(`📊 DEBUG: Applying ${modifications.length} modifications`);
         results.push({
           filePath: displayPath,
           success: applyResult.success,
@@ -1042,7 +801,7 @@ ANALYSIS:`;
     return results;
   }
 
-  // Generate AI modifications with parent context
+  // Enhanced AI modification generation with better prompts
   private async generateModifications(
     fullNodes: ModificationNode[],
     targets: Array<{ nodeId: string; reason: string }>,
@@ -1053,87 +812,104 @@ ANALYSIS:`;
     const nodeDetails = fullNodes.map(node => {
       const target = targets.find(t => t.nodeId === node.id);
       
-      // Build parent context string
-      let parentContext = '';
+      // Build context string
+      let contextInfo = '';
       if (node.parentNode) {
-        parentContext += `\nPARENT: ${node.parentNode.tagName}${node.parentNode.className ? `.${node.parentNode.className.split(' ')[0]}` : ''} (L${node.parentNode.startLine}-${node.parentNode.endLine})`;
-        
-        if (node.grandParentNode) {
-          parentContext += `\nGRANDPARENT: ${node.grandParentNode.tagName}${node.grandParentNode.className ? `.${node.grandParentNode.className.split(' ')[0]}` : ''} (L${node.grandParentNode.startLine}-${node.grandParentNode.endLine})`;
-        }
+        contextInfo += `\nPARENT: ${node.parentNode.tagName} (L${node.parentNode.startLine}-${node.parentNode.endLine})`;
       }
+      
+      // Include relevant props
+      const relevantProps = Object.entries(node.props || {})
+        .filter(([key]) => !key.includes('className') || !key.includes('class'))
+        .slice(0, 4)
+        .map(([key, value]) => `${key}="${value}"`)
+        .join(' ');
       
       return `
 NODE ID: ${node.id}
 TAG: ${node.tagName}
-CLASS: ${node.className || 'none'}
 TEXT: ${node.displayText || 'none'}
-POSITION: L${node.startLine}-${node.endLine}
-HASH: ${node.codeHash}${parentContext}
-REASON: ${target?.reason || 'unknown'}
+PROPS: ${relevantProps || 'none'}
+POSITION: L${node.startLine}-${node.endLine}${contextInfo}
+REASON: ${target?.reason || 'modification needed'}
 CURRENT CODE:
 ${node.fullCode}
 `;
     }).join('\n---\n');
 
-    const modificationPrompt = `You are an INTELLIGENT JSX code editor with advanced reasoning capabilities. You specialize in complex text transformations across multiple elements and semantic content mapping.
+    const modificationPrompt = `You are an EXPERT JSX CODE TRANSFORMER with advanced visual design capabilities. You specialize in comprehensive UI modifications that go beyond simple text changes.
 
 USER REQUEST: "${userRequest}"
 FILE: ${filePath}
 
-NODES TO MODIFY (with parent context for better positioning):
+NODES TO MODIFY WITH FULL CONTEXT:
 ${nodeDetails}
 
-🧠 INTELLIGENT MODIFICATION INSTRUCTIONS:
+🎨 COMPREHENSIVE MODIFICATION INSTRUCTIONS:
 
-1. **COMPLEX TEXT REPLACEMENT**: Use your full analytical brainpower for intelligent replacements:
-   - Example: <h1>hi<span>world</span></h1> → "hello world" should become <h1>hello <span>world</span></h1>
-   - Preserve ALL intermediate tags and structure while distributing new text logically
-   - Maintain the original hierarchy and formatting
+1. **VISUAL TRANSFORMATION PRIORITY**:
+   - When user requests color changes, modify BOTH text content AND visual styling
+   - Apply changes to className, style props, and CSS classes
+   - Consider the ENTIRE visual appearance, not just text
 
-2. **SEMANTIC CONTENT MAPPING**: When replacement terms are vague or need distribution:
-   - Example: <title>hi</title><description>wow</description> → "hello world very good"
-   - Intelligently map: title="hello world", description="very good"
-   - Use context clues from element names, classes, and structure
+2. **INTELLIGENT COLOR MAPPING - OVERRIDE TAILWIND CONFIG**:
+   - ⚠️ CRITICAL: If element uses Tailwind classes, REMOVE them and use inline styles instead
+   - Tailwind config may have custom colors that don't match user expectations
+   - "blue" → style={{backgroundColor: '#3B82F6', color: 'white'}} (true blue, not config blue)
+   - "red" → style={{backgroundColor: '#EF4444', color: 'white'}} (true red)
+   - "green" → style={{backgroundColor: '#10B981', color: 'white'}} (true green)
+   - Add hover effects with onMouseEnter/onMouseLeave for true colors
 
-3. **MULTI-LOCATION INTELLIGENCE**: When there are multiple places to apply changes:
-   - Analyze the semantic meaning of each location
-   - Distribute content based on element purpose and hierarchy
-   - Prioritize more prominent/important elements for primary content
+3. **BUTTON-SPECIFIC TRANSFORMATIONS - INLINE STYLE PRIORITY**:
+   - ALWAYS use inline styles for colors to override any Tailwind configuration
+   - Remove ALL Tailwind color classes (bg-*, text-*, border-* colors)
+   - Keep layout classes (flex, grid, p-*, m-*, rounded-*) but override colors
+   - Apply inline styles: backgroundColor, color, borderColor
+   - Ensure text remains readable with proper contrast
 
-4. **ADVANCED REASONING SCENARIOS**:
-   - **Fragmented Text**: If text spans multiple nested elements, preserve all intermediate tags
-   - **Content Distribution**: Split replacement text intelligently across related elements
-   - **Contextual Mapping**: Use element attributes (className, id, data-*) as hints for content placement
-   - **Hierarchical Awareness**: Consider parent-child relationships when distributing content
+4. **COMPREHENSIVE STYLE UPDATES - BYPASS TAILWIND CONFIG**:
+   - Replace Tailwind color classes with inline style objects
+   - Use standard web colors that match user expectations
+   - Remove conflicting Tailwind classes entirely
+   - Maintain responsive design with Tailwind layout classes only
+   - Preserve accessibility with proper contrast ratios
 
-5. **STRUCTURE PRESERVATION**:
-   - Maintain ALL existing attributes, event handlers, and structure
-   - Preserve exact JSX syntax and formatting
-   - Keep all intermediate elements even if they seem redundant
+5. **ADVANCED PATTERN RECOGNITION**:
+   - "change [element] to [color]" = Full visual transformation
+   - "make [element] [color]" = Complete color scheme update
+   - "update [element] color" = Comprehensive styling change
 
-6. **INTELLIGENT ANALYSIS**:
-   - Before making changes, analyze the content structure
-   - Understand the semantic relationship between elements
-   - Consider the user's intent beyond literal text replacement
-   - Apply logical reasoning to content distribution
+6. **STYLE CLASS INTELLIGENCE**:
+   - Analyze existing className for current color scheme
+   - Replace entire color families (primary-* → blue-*, accent-* → green-*)
+   - Maintain design system consistency
+   - Preserve layout classes (flex, grid, spacing)
 
-CRITICAL THINKING EXAMPLES:
+🔧 TECHNICAL REQUIREMENTS:
 
-Example 1 - Fragmented Text:
-Current: <h1>Welcome <span className="highlight">to our</span> website</h1>
-Request: Replace "Welcome to our website" with "Hello from the team"
-Smart Result: <h1>Hello <span className="highlight">from the</span> team</h1>
+- Return COMPLETE, VALID JSX with full styling applied
+- Preserve ALL existing functionality and event handlers
+- Maintain semantic HTML structure
+- Apply modern Tailwind CSS best practices
+- Ensure cross-browser compatibility
 
-Example 2 - Semantic Distribution:
-Current: <div><h2>Title</h2><p>Description text</p></div>
-Request: Replace with "Amazing Product - Now with better features"
-Smart Result: <div><h2>Amazing Product</h2><p>Now with better features</p></div>
+📐 EXAMPLE TRANSFORMATIONS - INLINE STYLE PRIORITY:
 
-Example 3 - Complex Structure:
-Current: <header><span>Brand:</span> <strong>OldName</strong> <em>tagline</em></header>
-Request: Replace with "NewBrand - Innovation First"
-Smart Result: <header><span>Brand:</span> <strong>NewBrand</strong> <em>Innovation First</em></header>
+OLD: className="bg-primary-600 hover:bg-primary-700 text-white"
+NEW: className="px-6 py-2 rounded-lg font-semibold transition-colors" style={{backgroundColor: '#3B82F6', color: 'white'}}
+
+OLD: <Button variant="outline" className="bg-blue-500">Order Now</Button>  
+NEW: <Button className="px-6 py-2 rounded-lg font-semibold transition-colors" style={{backgroundColor: '#3B82F6', color: 'white', border: '2px solid #3B82F6'}} onMouseEnter={(e) => e.target.style.backgroundColor = '#2563EB'} onMouseLeave={(e) => e.target.style.backgroundColor = '#3B82F6'}>Order Now</Button>
+
+OLD: className="btn-primary text-blue-600"
+NEW: className="px-4 py-2 rounded-md font-medium" style={{backgroundColor: '#3B82F6', color: 'white'}}
+
+🎨 COLOR REFERENCE (Use these exact hex values):
+- Blue: #3B82F6 (background), #2563EB (hover), #1D4ED8 (active)
+- Red: #EF4444 (background), #DC2626 (hover), #B91C1C (active)  
+- Green: #10B981 (background), #059669 (hover), #047857 (active)
+- Yellow: #F59E0B (background), #D97706 (hover), #B45309 (active)
+- Purple: #8B5CF6 (background), #7C3AED (hover), #6D28D9 (active)
 
 You must respond with ONLY a valid JSON object in this exact format:
 
@@ -1142,89 +918,61 @@ You must respond with ONLY a valid JSON object in this exact format:
     {
       "filePath": "${filePath}",
       "nodeId": "exact_node_id_from_above",
-      "newCode": "complete JSX element with intelligent content distribution",
-      "reasoning": "detailed explanation of intelligent reasoning applied, content distribution logic, and structural decisions made"
+      "newCode": "complete JSX element with comprehensive visual styling applied",
+      "reasoning": "detailed explanation of all visual changes applied, including specific color classes, hover states, and design improvements made"
     }
   ]
 }
 
-🎯 CRITICAL: Use your advanced reasoning capabilities to create intelligent, context-aware modifications that go beyond simple text replacement. Think deeply about content structure, semantic meaning, and optimal distribution of replacement text.
+⚡ CRITICAL: Focus on VISUAL IMPACT with TRUE COLORS. When user requests color changes:
+1. REMOVE all Tailwind color classes (bg-*, text-*, border-* colors)
+2. USE inline styles with exact hex colors that match user expectations  
+3. IGNORE Tailwind configuration - it may have custom colors
+4. ENSURE the color is unmistakably the requested color (true blue, not config blue)
+5. Transform the ENTIRE appearance, not just text content!
 
 Do not include any text before or after the JSON object.`;
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022', // Updated to latest model
+        model: 'claude-3-5-sonnet-20241022',
         max_tokens: 4000,
         temperature: 0.1,
         messages: [{ role: 'user', content: modificationPrompt }],
       });
 
-      this.tokenTracker.logUsage(response.usage, `Phase 2: Intelligent Modification Generation`);
+      this.tokenTracker.logUsage(response.usage, `Phase 2: Code Modification Generation`);
 
       const responseText = response.content[0]?.text || '';
-      this.streamUpdate(`🧠 AI Response: ${responseText.substring(0, 200)}...`);
       
-      // Try multiple JSON extraction methods
+      // Extract JSON from response
       let jsonData = null;
       
-      // Method 1: Look for JSON object
-      let jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
           jsonData = JSON.parse(jsonMatch[0]);
         } catch (parseError) {
-          this.streamUpdate(`⚠️ JSON parse error (method 1): ${parseError}`);
-        }
-      }
-      
-      // Method 2: Try to find JSON between ```json blocks
-      if (!jsonData) {
-        const jsonBlockMatch = responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-        if (jsonBlockMatch) {
-          try {
-            jsonData = JSON.parse(jsonBlockMatch[1]);
-          } catch (parseError) {
-            this.streamUpdate(`⚠️ JSON parse error (method 2): ${parseError}`);
-          }
-        }
-      }
-      console.log("input tokens",response.usage.input_tokens)
-      console.log("output tokens",response.usage.output_tokens)
-      if (!jsonData) {
-        const cleanedText = responseText
-          .replace(/```(?:json)?/g, '')
-          .replace(/```/g, '')
-          .trim();
-        
-        const cleanMatch = cleanedText.match(/\{[\s\S]*\}/);
-        if (cleanMatch) {
-          try {
-            jsonData = JSON.parse(cleanMatch[0]);
-          } catch (parseError) {
-            this.streamUpdate(`⚠️ JSON parse error (method 3): ${parseError}`);
-          }
+          this.streamUpdate(`⚠️ JSON parse error: ${parseError}`);
         }
       }
       
       if (jsonData && jsonData.modifications) {
-        this.streamUpdate(`✅ Generated ${jsonData.modifications.length} intelligent modifications`);
+        this.streamUpdate(`✅ Generated ${jsonData.modifications.length} modifications`);
         return jsonData.modifications;
       } else {
-        // Enhanced fallback with intelligent reasoning
-        this.streamUpdate(`⚠️ No valid JSON found, generating intelligent fallback modifications`);
-        return this.generateIntelligentFallbackModifications(fullNodes, targets, userRequest, filePath);
+        this.streamUpdate(`⚠️ No valid JSON found, generating fallback modifications`);
+        return this.generateFallbackModifications(fullNodes, targets, userRequest, filePath);
       }
       
     } catch (error) {
       this.streamUpdate(`❌ Modification generation error: ${error}`);
-      this.streamUpdate(`🔄 Attempting intelligent fallback modification generation...`);
-      return this.generateIntelligentFallbackModifications(fullNodes, targets, userRequest, filePath);
+      return this.generateFallbackModifications(fullNodes, targets, userRequest, filePath);
     }
   }
 
-  // Enhanced fallback method with intelligent reasoning
-  private generateIntelligentFallbackModifications(
+  // Fallback modification generation
+  private generateFallbackModifications(
     fullNodes: ModificationNode[],
     targets: Array<{ nodeId: string; reason: string }>,
     userRequest: string,
@@ -1237,35 +985,20 @@ Do not include any text before or after the JSON object.`;
           filePath,
           nodeId: target.nodeId,
           newCode: '',
-          reasoning: 'Node not found for intelligent modification'
+          reasoning: 'Node not found for modification'
         };
       }
 
-      // Apply basic intelligent reasoning for common patterns
-      let intelligentCode = node.fullCode;
+      // Simple fallback - return original code with a comment
+      let fallbackCode = node.fullCode;
       
-      // Pattern 1: Simple text replacement with structure preservation
-      if (userRequest.includes('replace') && userRequest.includes('with')) {
-        const match = userRequest.match(/replace\s+["']?([^"']+)["']?\s+with\s+["']?([^"']+)["']?/i);
+      // For simple text changes, try basic replacement
+      if (userRequest.includes('change') && userRequest.includes('to')) {
+        const match = userRequest.match(/change\s+(.+?)\s+to\s+(.+)/i);
         if (match) {
           const [, oldText, newText] = match;
-          
-          // Intelligent distribution for fragmented text
-          if (intelligentCode.includes('<span>') || intelligentCode.includes('<strong>') || intelligentCode.includes('<em>')) {
-            // Preserve structure while replacing content intelligently
-            const words = newText.split(' ');
-            if (words.length >= 2) {
-              // Distribute words across nested elements
-              intelligentCode = intelligentCode.replace(/>([^<]+)</g, (match, text) => {
-                if (text.trim() === oldText.trim()) {
-                  return `>${newText}<`;
-                }
-                return match;
-              });
-            }
-          } else {
-            // Simple replacement
-            intelligentCode = intelligentCode.replace(oldText, newText);
+          if (fallbackCode.includes(oldText)) {
+            fallbackCode = fallbackCode.replace(oldText, newText);
           }
         }
       }
@@ -1273,13 +1006,13 @@ Do not include any text before or after the JSON object.`;
       return {
         filePath,
         nodeId: target.nodeId,
-        newCode: intelligentCode,
-        reasoning: `Intelligent fallback modification applied using pattern recognition and structure preservation for: ${userRequest}`
+        newCode: fallbackCode,
+        reasoning: `Fallback modification applied for: ${userRequest}`
       };
     });
   }
 
-  // ENHANCED: Debug-enabled modification application with multiple fallback strategies
+  // Enhanced modification application with multiple strategies
   private async applyModificationsFixed(
     modifications: ModificationRequest[],
     fileKey: string,
@@ -1299,12 +1032,10 @@ Do not include any text before or after the JSON object.`;
       };
     }
 
-    this.streamUpdate(`🔧 ENHANCED: Applying ${modifications.length} modifications to ${displayPath}...`);
-    this.streamUpdate(`📊 DEBUG: Original file size: ${projectFile.content.length} characters`);
+    this.streamUpdate(`🔧 Applying ${modifications.length} modifications to ${displayPath}...`);
 
     let content = projectFile.content;
     let appliedCount = 0;
-    const debugInfo: string[] = [];
 
     // Sort modifications by position (reverse order to avoid offset issues)
     const sortedMods = modifications
@@ -1314,251 +1045,77 @@ Do not include any text before or after the JSON object.`;
       }))
       .filter(mod => mod.node)
       .sort((a, b) => {
-        // Sort by position, preferring line-based positions
         const aPos = a.node!.lineBasedStart || a.node!.startPos;
         const bPos = b.node!.lineBasedStart || b.node!.startPos;
         return bPos - aPos;
       });
 
-    this.streamUpdate(`📋 DEBUG: Processing ${sortedMods.length} valid modifications`);
-
-    // Apply each modification with enhanced strategies
-    for (let i = 0; i < sortedMods.length; i++) {
-      const mod = sortedMods[i];
+    // Apply each modification with multiple strategies
+    for (const mod of sortedMods) {
       const node = mod.node!;
       let success = false;
-      let errorDetail = '';
-      let strategyUsed = '';
 
-      this.streamUpdate(`\n🔄 [${i+1}/${sortedMods.length}] Processing node ${node.id} (${node.tagName})`);
-      this.streamUpdate(`   📍 Target position: L${node.startLine}-${node.endLine}, chars ${node.startPos}-${node.endPos}`);
-      this.streamUpdate(`   📝 Original code: ${node.originalCode.substring(0, 100)}${node.originalCode.length > 100 ? '...' : ''}`);
-      this.streamUpdate(`   🆕 New code: ${mod.newCode.substring(0, 100)}${mod.newCode.length > 100 ? '...' : ''}`);
-
-      // Strategy 1: Exact hash-verified replacement (most reliable)
+      // Strategy 1: Exact hash-verified replacement
       if (node.originalCode && node.codeHash) {
         const currentHash = crypto.createHash('md5').update(node.originalCode).digest('hex');
         if (currentHash === node.codeHash && content.includes(node.originalCode)) {
           const occurrences = content.split(node.originalCode).length - 1;
-          this.streamUpdate(`   🔍 Hash match found, ${occurrences} occurrences in file`);
           
           if (occurrences === 1) {
-            const beforeLength = content.length;
             content = content.replace(node.originalCode, mod.newCode);
-            const afterLength = content.length;
             success = true;
-            strategyUsed = 'exact-hash';
-            this.streamUpdate(`   ✅ STRATEGY 1 SUCCESS: Exact hash replacement (${beforeLength} → ${afterLength} chars)`);
-          } else {
-            errorDetail = `Multiple occurrences (${occurrences}) - ambiguous`;
-            this.streamUpdate(`   ⚠️ STRATEGY 1 SKIP: ${errorDetail}`);
+            this.streamUpdate(`   ✅ Strategy 1: Exact replacement for ${node.id}`);
           }
-        } else {
-          errorDetail = 'Hash mismatch or code not found';
-          this.streamUpdate(`   ⚠️ STRATEGY 1 FAIL: ${errorDetail}`);
         }
       }
 
-      // Strategy 2: Context-aware replacement with fuzzy matching
+      // Strategy 2: Context-aware replacement
       if (!success && node.contextBefore && node.contextAfter) {
-        this.streamUpdate(`   🔍 STRATEGY 2: Context-aware replacement`);
-        this.streamUpdate(`   📋 Context before: "${node.contextBefore.substring(0, 30)}..."`);
-        this.streamUpdate(`   📋 Context after: "${node.contextAfter.substring(0, 30)}..."`);
-        
         try {
-          // Try exact context match first
           const exactPattern = this.escapeRegExp(node.contextBefore) + 
                               '([\\s\\S]*?)' + 
                               this.escapeRegExp(node.contextAfter);
           const exactRegex = new RegExp(exactPattern, 'g');
           const exactMatches = Array.from(content.matchAll(exactRegex));
           
-          this.streamUpdate(`   🔍 Exact context matches: ${exactMatches.length}`);
-          
           if (exactMatches.length === 1) {
             const match = exactMatches[0];
             const matchedCode = match[1];
             const similarity = this.calculateSimilarity(matchedCode.trim(), node.originalCode.trim());
             
-            this.streamUpdate(`   📊 Similarity score: ${(similarity * 100).toFixed(1)}%`);
-            
-            if (similarity > 0.7) { // 70% similarity threshold
+            if (similarity > 0.7) {
               const replacement = node.contextBefore + mod.newCode + node.contextAfter;
               content = content.replace(match[0], replacement);
               success = true;
-              strategyUsed = 'context-exact';
-              this.streamUpdate(`   ✅ STRATEGY 2 SUCCESS: Context-aware replacement`);
-            } else {
-              errorDetail = `Low similarity (${(similarity * 100).toFixed(1)}%)`;
-              this.streamUpdate(`   ⚠️ STRATEGY 2 FAIL: ${errorDetail}`);
+              this.streamUpdate(`   ✅ Strategy 2: Context replacement for ${node.id}`);
             }
-          } else {
-            errorDetail = `Context pattern matches: ${exactMatches.length} (expected 1)`;
-            this.streamUpdate(`   ⚠️ STRATEGY 2 FAIL: ${errorDetail}`);
           }
         } catch (regexError) {
-          errorDetail = `Regex error: ${regexError}`;
-          this.streamUpdate(`   ⚠️ STRATEGY 2 ERROR: ${errorDetail}`);
+          // Continue to next strategy
         }
       }
 
-      // Strategy 3: Line-based replacement with validation
+      // Strategy 3: Line-based replacement
       if (!success && node.lineBasedStart >= 0 && node.lineBasedEnd > node.lineBasedStart) {
-        this.streamUpdate(`   🔍 STRATEGY 3: Line-based replacement`);
-        this.streamUpdate(`   📍 Line-based position: ${node.lineBasedStart}-${node.lineBasedEnd}`);
-        
         if (node.lineBasedEnd <= content.length) {
           const before = content.substring(0, node.lineBasedStart);
           const after = content.substring(node.lineBasedEnd);
           const currentCode = content.substring(node.lineBasedStart, node.lineBasedEnd);
           
-          this.streamUpdate(`   📝 Current code at position: "${currentCode.substring(0, 50)}..."`);
-          
-          // Verify this is the right code
           const similarity = this.calculateSimilarity(currentCode.trim(), node.originalCode.trim());
-          this.streamUpdate(`   📊 Similarity score: ${(similarity * 100).toFixed(1)}%`);
           
-          if (similarity > 0.6) { // 60% similarity threshold for line-based
+          if (similarity > 0.6) {
             content = before + mod.newCode + after;
             success = true;
-            strategyUsed = 'line-based';
-            this.streamUpdate(`   ✅ STRATEGY 3 SUCCESS: Line-based replacement`);
-          } else {
-            errorDetail = `Line-based similarity too low (${(similarity * 100).toFixed(1)}%)`;
-            this.streamUpdate(`   ⚠️ STRATEGY 3 FAIL: ${errorDetail}`);
-          }
-        } else {
-          errorDetail = `Position out of bounds (${node.lineBasedEnd} > ${content.length})`;
-          this.streamUpdate(`   ⚠️ STRATEGY 3 FAIL: ${errorDetail}`);
-        }
-      }
-
-      // Strategy 4: Fuzzy search with tag name and attributes
-      if (!success) {
-        this.streamUpdate(`   🔍 STRATEGY 4: Fuzzy search by tag and attributes`);
-        
-        // Create a search pattern based on tag name and key attributes
-        let searchPattern = `<${node.tagName}`;
-        if (node.className) {
-          const mainClass = node.className.split(' ')[0];
-          searchPattern += `[^>]*className="[^"]*${this.escapeRegExp(mainClass)}[^"]*"`;
-        }
-        
-        // Look for opening tag
-        const tagRegex = new RegExp(searchPattern, 'gi');
-        const tagMatches = Array.from(content.matchAll(tagRegex));
-        
-        this.streamUpdate(`   🔍 Tag pattern matches: ${tagMatches.length} for pattern: ${searchPattern}`);
-        
-        if (tagMatches.length === 1) {
-          const tagMatch = tagMatches[0];
-          const tagStart = tagMatch.index!;
-          
-          // Try to find the full element by counting opening/closing tags
-          let openTags = 0;
-          let elementEnd = tagStart;
-          let inTag = false;
-          let tagName = node.tagName;
-          
-          for (let pos = tagStart; pos < content.length; pos++) {
-            const char = content[pos];
-            
-            if (char === '<') {
-              inTag = true;
-              // Check if this is our opening tag
-              if (content.substring(pos).startsWith(`<${tagName}`)) {
-                openTags++;
-              } else if (content.substring(pos).startsWith(`</${tagName}`)) {
-                openTags--;
-                if (openTags === 0) {
-                  // Find the end of this closing tag
-                  const closingEnd = content.indexOf('>', pos);
-                  if (closingEnd !== -1) {
-                    elementEnd = closingEnd + 1;
-                    break;
-                  }
-                }
-              }
-            }
-            
-            // Handle self-closing tags
-            if (char === '/' && content[pos + 1] === '>' && openTags === 1) {
-              elementEnd = pos + 2;
-              break;
-            }
-          }
-          
-          if (elementEnd > tagStart) {
-            const foundCode = content.substring(tagStart, elementEnd);
-            const similarity = this.calculateSimilarity(foundCode.trim(), node.originalCode.trim());
-            
-            this.streamUpdate(`   📝 Found element: "${foundCode.substring(0, 50)}..."`);
-            this.streamUpdate(`   📊 Similarity score: ${(similarity * 100).toFixed(1)}%`);
-            
-            if (similarity > 0.5) { // 50% similarity threshold for fuzzy search
-              const before = content.substring(0, tagStart);
-              const after = content.substring(elementEnd);
-              content = before + mod.newCode + after;
-              success = true;
-              strategyUsed = 'fuzzy-search';
-              this.streamUpdate(`   ✅ STRATEGY 4 SUCCESS: Fuzzy search replacement`);
-            } else {
-              errorDetail = `Fuzzy similarity too low (${(similarity * 100).toFixed(1)}%)`;
-              this.streamUpdate(`   ⚠️ STRATEGY 4 FAIL: ${errorDetail}`);
-            }
-          } else {
-            errorDetail = 'Could not find element boundaries';
-            this.streamUpdate(`   ⚠️ STRATEGY 4 FAIL: ${errorDetail}`);
-          }
-        } else {
-          errorDetail = `Tag pattern matches: ${tagMatches.length} (expected 1)`;
-          this.streamUpdate(`   ⚠️ STRATEGY 4 FAIL: ${errorDetail}`);
-        }
-      }
-
-      // Strategy 5: Parent-relative positioning (last resort)
-      if (!success && node.parentNode) {
-        this.streamUpdate(`   🔍 STRATEGY 5: Parent-relative positioning (last resort)`);
-        this.streamUpdate(`   👨‍👩‍👧‍👦 Parent: ${node.parentNode.tagName} (L${node.parentNode.startLine}-${node.parentNode.endLine})`);
-        
-        // Find parent element in content and try to locate child within it
-        const parentPattern = `<${node.parentNode.tagName}`;
-        const parentMatches = Array.from(content.matchAll(new RegExp(this.escapeRegExp(parentPattern), 'gi')));
-        
-        this.streamUpdate(`   🔍 Parent matches: ${parentMatches.length}`);
-        
-        if (parentMatches.length === 1) {
-          // Simple text replacement within the likely parent area
-          const originalText = node.displayText;
-          if (originalText && content.includes(originalText)) {
-            const occurrences = content.split(originalText).length - 1;
-            if (occurrences === 1) {
-              // Replace the display text with new code (very basic)
-              content = content.replace(originalText, mod.newCode);
-              success = true;
-              strategyUsed = 'parent-text-replace';
-              this.streamUpdate(`   ✅ STRATEGY 5 SUCCESS: Parent-relative text replacement`);
-            }
+            this.streamUpdate(`   ✅ Strategy 3: Line-based replacement for ${node.id}`);
           }
         }
       }
 
-      // Record results
       if (success) {
         appliedCount++;
-        debugInfo.push(`✅ ${node.id}: ${strategyUsed} - ${mod.reasoning}`);
-        this.streamUpdate(`   🎉 SUCCESS: Applied modification using ${strategyUsed} strategy`);
       } else {
-        debugInfo.push(`❌ ${node.id}: ${errorDetail}`);
-        this.streamUpdate(`   💥 FAILED: All strategies failed - ${errorDetail}`);
-        this.streamUpdate(`   📍 Node debug info:`);
-        this.streamUpdate(`      - ID: ${node.id}`);
-        this.streamUpdate(`      - Tag: ${node.tagName}`);
-        this.streamUpdate(`      - Class: ${node.className || 'none'}`);
-        this.streamUpdate(`      - Text: ${node.displayText || 'none'}`);
-        this.streamUpdate(`      - Hash: ${node.codeHash}`);
-        this.streamUpdate(`      - Original: ${node.originalCode.length} chars`);
-        this.streamUpdate(`      - New: ${mod.newCode.length} chars`);
+        this.streamUpdate(`   ❌ Failed to apply modification for ${node.id}`);
       }
     }
 
@@ -1573,37 +1130,26 @@ Do not include any text before or after the JSON object.`;
         projectFile.lines = content.split('\n').length;
         projectFile.size = content.length;
 
-        this.streamUpdate(`\n💾 SAVED: ${appliedCount}/${modifications.length} modifications to ${displayPath}`);
-        this.streamUpdate(`📊 FINAL: File size changed from ${this.tokenTracker.getStats().totalTokens} to ${content.length} characters`);
-        
-        // Log debug summary
-        this.streamUpdate(`\n📋 MODIFICATION SUMMARY:`);
-        debugInfo.forEach(info => this.streamUpdate(`   ${info}`));
+        this.streamUpdate(`💾 Saved ${appliedCount}/${modifications.length} modifications to ${displayPath}`);
 
       } catch (writeError) {
-        this.streamUpdate(`💥 WRITE ERROR: ${writeError}`);
+        this.streamUpdate(`💥 Write error: ${writeError}`);
         return { filePath: displayPath, success: false, modificationsApplied: 0, error: `Write failed: ${writeError}` };
       }
-    } else {
-      this.streamUpdate(`\n💔 NO MODIFICATIONS APPLIED: All strategies failed`);
-      this.streamUpdate(`📋 FAILURE SUMMARY:`);
-      debugInfo.forEach(info => this.streamUpdate(`   ${info}`));
     }
 
     return { filePath: displayPath, success: appliedCount > 0, modificationsApplied: appliedCount };
   }
 
-  // Helper method to escape regex special characters
+  // Helper methods
   private escapeRegExp(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\      if (jsonData');
+  }
 
-  // Helper method to calculate string similarity
   private calculateSimilarity(str1: string, str2: string): number {
     if (str1 === str2) return 1.0;
     if (str1.length === 0 || str2.length === 0) return 0.0;
     
-    // Simple character-based similarity
     const longer = str1.length > str2.length ? str1 : str2;
     const shorter = str1.length > str2.length ? str2 : str1;
     
@@ -1617,44 +1163,6 @@ Do not include any text before or after the JSON object.`;
     }
     
     return matches / maxLength;
-  }
-
-  // ============================================================================
-  // UTILITY METHODS
-  // ============================================================================
-
-  private findFileKey(relativePath: string, projectFiles: Map<string, ProjectFile>): string | null {
-    // Direct match
-    if (projectFiles.has(relativePath)) {
-      return relativePath;
-    }
-    
-    // Find by relativePath property
-    for (const [key, file] of projectFiles) {
-      if (file.relativePath === relativePath) {
-        return key;
-      }
-    }
-    
-    // Find by path ending
-    for (const [key, file] of projectFiles) {
-      if (key.endsWith(relativePath) || file.path.endsWith(relativePath)) {
-        return key;
-      }
-    }
-    
-    // Normalize and match
-    const normalizedTarget = relativePath.replace(/\\/g, '/');
-    for (const [key, file] of projectFiles) {
-      const normalizedKey = key.replace(/\\/g, '/');
-      const normalizedPath = file.path.replace(/\\/g, '/');
-      
-      if (normalizedKey.endsWith(normalizedTarget) || normalizedPath.endsWith(normalizedTarget)) {
-        return key;
-      }
-    }
-    
-    return null;
   }
 
   private buildChangeReport(
@@ -1674,7 +1182,6 @@ Do not include any text before or after the JSON object.`;
         filesAnalyzed: fileStructures.length,
         totalNodes: fileStructures.reduce((sum, f) => sum + f.nodes.length, 0),
         targetNodesIdentified: analysisResult.targetNodes.length,
-        confidence: analysisResult.confidence,
         reasoning: analysisResult.reasoning
       }
     });
@@ -1707,6 +1214,42 @@ Do not include any text before or after the JSON object.`;
     return changes;
   }
 
+private findFileKey(relativePath: string, projectFiles: Map<string, ProjectFile>): string | null {
+  // Normalize the target path
+  const normalizedTarget = relativePath.replace(/\\/g, '/');
+  
+  // Direct match
+  if (projectFiles.has(relativePath)) {
+    return relativePath;
+  }
+  
+  // Try normalized version
+  for (const [key, file] of projectFiles) {
+    const normalizedKey = key.replace(/\\/g, '/');
+    const normalizedFileRelative = file.relativePath?.replace(/\\/g, '/');
+    
+    if (normalizedKey === normalizedTarget || 
+        normalizedFileRelative === normalizedTarget ||
+        normalizedKey.endsWith('/' + normalizedTarget) ||
+        normalizedFileRelative?.endsWith('/' + normalizedTarget)) {
+      return key;
+    }
+  }
+  
+  // Fallback: exact filename match (TypeScript-safe)
+  const targetFilename = normalizedTarget.split('/').pop();
+  if (targetFilename) {  // ✅ Check if targetFilename exists
+    for (const [key, file] of projectFiles) {
+      if (key.includes(targetFilename) || 
+          (file.relativePath && file.relativePath.includes(targetFilename))) {  // ✅ Safe check
+        return key;
+      }
+    }
+  }
+  
+  return null;
+}
+
   private resolveFilePath(projectFile: ProjectFile): string {
     if (isAbsolute(projectFile.path)) {
       return projectFile.path.replace(/builddora/g, 'buildora');
@@ -1727,10 +1270,7 @@ Do not include any text before or after the JSON object.`;
     return filePath.match(/\.(tsx?|jsx?)$/i) !== null;
   }
 
-  // ============================================================================
-  // BACKWARD COMPATIBILITY METHODS
-  // ============================================================================
-
+  // Backward compatibility methods
   async processTargetedModification(
     prompt: string,
     projectFiles: Map<string, ProjectFile>,
@@ -1749,95 +1289,14 @@ Do not include any text before or after the JSON object.`;
     return this.processBatchModification(prompt, projectFiles, reactBasePath, streamCallback);
   }
 
-  async handleTargetedModification(
-    prompt: string, 
-    projectFiles: Map<string, ProjectFile>, 
-    modificationSummary?: any
-  ): Promise<boolean> {
-    const result = await this.processBatchModification(
-      prompt,
-      projectFiles,
-      this.reactBasePath,
-      (message: string) => this.streamUpdate(message)
-    );
-    
-    return result.success;
-  }
-
-  async processGranularModification(
-    prompt: string,
-    projectFiles: Map<string, ProjectFile>,
-    reactBasePath: string,
-    streamCallback: (message: string) => void
-  ) {
-    return this.processBatchModification(prompt, projectFiles, reactBasePath, streamCallback);
-  }
-
   getTokenTracker(): TokenTracker {
     return this.tokenTracker;
   }
 }
 
-// ============================================================================
-// EXPORTS - BACKWARD COMPATIBILITY
-// ============================================================================
-
+// Exports
 export default TwoPhaseASTProcessor;
 export { TwoPhaseASTProcessor as BatchASTProcessor };
 export { TwoPhaseASTProcessor as GranularASTProcessor };
 export { TwoPhaseASTProcessor as TargetedNodesProcessor };
 export { TwoPhaseASTProcessor as OptimizedBatchProcessor };
-
-/*
-## 🎯 COMPLETE FIXED TWO-PHASE PROCESSOR - ENHANCED POSITIONING
-
-### ✅ CRITICAL FIXES FOR ACCURATE PATCH POSITIONING:
-
-1. **Enhanced Position Calculation**: 
-   - Added `calculateAccuratePosition()` method with multiple position strategies
-   - Line-based, AST-based, and fallback position calculation
-   - Context extraction for more accurate replacements
-
-2. **Multi-Strategy Replacement**:
-   - Hash-verified exact replacement (most accurate)
-   - Context-aware replacement using before/after context
-   - Line-based replacement with similarity validation
-   - Fallback position-based replacement
-
-3. **Similarity Validation**:
-   - Added `calculateSimilarity()` to verify code matches before replacement
-   - Prevents replacing wrong code sections
-   - Multiple similarity thresholds for different strategies
-
-4. **Enhanced Node Data**:
-   - Added `lineBasedStart/End`, `originalCode`, `codeHash`
-   - Added `contextBefore/After` for precise positioning
-   - MD5 hash verification of original code
-
-5. **Better Error Handling**:
-   - Detailed error reporting for failed replacements
-   - Multiple fallback strategies if primary fails
-   - Clear logging of which strategy succeeded
-
-### 🔧 KEY IMPROVEMENTS:
-- ✅ Multiple position calculation strategies
-- ✅ Hash verification prevents wrong replacements
-- ✅ Context-aware replacement for precision
-- ✅ Similarity validation before applying changes
-- ✅ Enhanced error reporting and debugging
-- ✅ Maintains backward compatibility
-
-### 📊 EXPECTED RESULTS:
-- ✅ Accurate patch positioning in correct locations
-- ✅ No more misplaced modifications
-- ✅ Higher success rate for complex code changes
-- ✅ Better handling of multi-line JSX elements
-- ✅ Robust fallback strategies
-
-This complete implementation should resolve the misplaced patch issues and ensure modifications are applied to the correct locations in your React/JSX files.
-*/
-  // Helper method to escape regex special characters
-
-
-
-  
