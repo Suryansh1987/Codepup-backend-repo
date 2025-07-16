@@ -50,9 +50,27 @@ interface ModificationNode extends AnalysisNode {
   };
 }
 
+// NEW: Import information interfaces
+interface ImportInfo {
+  source: string;
+  importType: 'default' | 'named' | 'namespace' | 'side-effect';
+  imports: string[];
+  line: number;
+  fullStatement: string;
+}
+
+interface FileImportInfo {
+  filePath: string;
+  imports: ImportInfo[];
+  hasLucideReact: boolean;
+  hasReact: boolean;
+  allImportSources: string[];
+}
+
 interface FileStructureInfo {
   filePath: string;
   nodes: AnalysisNode[];
+  imports?: FileImportInfo; // NEW: Added import info
 }
 
 interface ModificationRequest {
@@ -60,6 +78,7 @@ interface ModificationRequest {
   nodeId: string;
   newCode: string;
   reasoning: string;
+  requiredImports?: ImportInfo[]; // NEW: Required imports for the modification
 }
 
 interface AnalysisResponse {
@@ -112,12 +131,13 @@ class TokenTracker {
 }
 
 // ============================================================================
-// COMPLETE DYNAMIC AST ANALYZER
+// COMPLETE DYNAMIC AST ANALYZER WITH IMPORT EXTRACTION
 // ============================================================================
 
 class DynamicASTAnalyzer {
   private streamCallback?: (message: string) => void;
   private nodeCache = new Map<string, any[]>();
+  private importCache = new Map<string, FileImportInfo>(); // NEW: Import cache
 
   setStreamCallback(callback: (message: string) => void): void {
     this.streamCallback = callback;
@@ -126,6 +146,107 @@ class DynamicASTAnalyzer {
   private streamUpdate(message: string): void {
     if (this.streamCallback) {
       this.streamCallback(message);
+    }
+  }
+
+  // NEW: Extract import information from file
+  private extractImports(filePath: string, content: string): FileImportInfo {
+    const cacheKey = `${filePath}_${content.length}`;
+    
+    if (this.importCache.has(cacheKey)) {
+      return this.importCache.get(cacheKey)!;
+    }
+
+    const imports: ImportInfo[] = [];
+    let hasLucideReact = false;
+    let hasReact = false;
+    const allImportSources: string[] = [];
+
+    try {
+      const ast = parse(content, {
+        sourceType: 'module',
+        plugins: ['jsx', 'typescript'],
+        ranges: true
+      });
+
+      traverse(ast, {
+        ImportDeclaration: (path: any) => {
+          const node = path.node;
+          const source = node.source.value;
+          const line = node.loc?.start.line || 1;
+          const fullStatement = content.split('\n')[line - 1]?.trim() || '';
+
+          allImportSources.push(source);
+          
+          if (source === 'lucide-react') {
+            hasLucideReact = true;
+          }
+          if (source === 'react') {
+            hasReact = true;
+          }
+
+          // Determine import type and extract imports
+          let importType: 'default' | 'named' | 'namespace' | 'side-effect' = 'side-effect';
+          const importNames: string[] = [];
+
+          if (node.specifiers && node.specifiers.length > 0) {
+            for (const specifier of node.specifiers) {
+              if (specifier.type === 'ImportDefaultSpecifier') {
+                importType = 'default';
+                importNames.push(specifier.local.name);
+              } else if (specifier.type === 'ImportNamespaceSpecifier') {
+                importType = 'namespace';
+                importNames.push(specifier.local.name);
+              } else if (specifier.type === 'ImportSpecifier') {
+                importType = 'named';
+                const importedName = specifier.imported.name;
+                const localName = specifier.local.name;
+                importNames.push(importedName === localName ? importedName : `${importedName} as ${localName}`);
+              }
+            }
+          }
+
+          imports.push({
+            source,
+            importType,
+            imports: importNames,
+            line,
+            fullStatement
+          });
+        }
+      });
+
+    } catch (error) {
+      this.streamUpdate(`⚠️ Import extraction failed for ${filePath}: ${error}`);
+    }
+
+    const fileImportInfo: FileImportInfo = {
+      filePath,
+      imports,
+      hasLucideReact,
+      hasReact,
+      allImportSources
+    };
+
+    this.importCache.set(cacheKey, fileImportInfo);
+    return fileImportInfo;
+  }
+
+  // NEW: Generate import statements
+  private generateImportStatement(importInfo: ImportInfo): string {
+    const { source, importType, imports } = importInfo;
+
+    switch (importType) {
+      case 'default':
+        return `import ${imports[0]} from '${source}';`;
+      case 'named':
+        return `import { ${imports.join(', ')} } from '${source}';`;
+      case 'namespace':
+        return `import * as ${imports[0]} from '${source}';`;
+      case 'side-effect':
+        return `import '${source}';`;
+      default:
+        return `import { ${imports.join(', ')} } from '${source}';`;
     }
   }
 
@@ -394,6 +515,20 @@ class DynamicASTAnalyzer {
     return minimalNodes;
   }
 
+  // NEW: Extract imports for a file
+  extractFileImports(filePath: string, projectFiles: Map<string, ProjectFile>): FileImportInfo | null {
+    if (!filePath.match(/\.(tsx?|jsx?)$/i)) {
+      return null;
+    }
+
+    const file = projectFiles.get(filePath);
+    if (!file) {
+      return null;
+    }
+
+    return this.extractImports(filePath, file.content);
+  }
+
   // Store full node cache
   private fileNodeCache = new Map<string, Map<string, ModificationNode>>();
 
@@ -456,8 +591,8 @@ class DynamicASTAnalyzer {
     return result;
   }
 
-  // Generate compact tree for AI
-  generateCompactTree(files: FileStructureInfo[]): string {
+  // ENHANCED: Generate compact tree with import info
+  generateCompactTreeWithImports(files: FileStructureInfo[]): string {
     return files.map(file => {
       const nodeList = file.nodes.map(node => {
         const className = node.className ? `.${node.className.split(' ')[0]}` : '';
@@ -467,19 +602,38 @@ class DynamicASTAnalyzer {
         
         return `${node.id}:${node.tagName}${className}${text}${hasHandlers}${lines}`;
       }).join('\n    ');
+
+      // Add import information
+      let importInfo = '';
+      if (file.imports) {
+        const importLines = file.imports.imports.map(imp => 
+          `${imp.source}: [${imp.imports.join(', ')}]`
+        ).join(', ');
+        
+        const lucideStatus = file.imports.hasLucideReact ? '✅ Lucide' : '❌ No Lucide';
+        const reactStatus = file.imports.hasReact ? '✅ React' : '❌ No React';
+        
+        importInfo = `\n  📦 IMPORTS: ${importLines}\n  🔍 STATUS: ${lucideStatus}, ${reactStatus}`;
+      }
       
-      return `📁 ${file.filePath}:\n    ${nodeList}`;
+      return `📁 ${file.filePath}:${importInfo}\n    ${nodeList}`;
     }).join('\n\n');
+  }
+
+  // Generate compact tree for AI (backward compatibility)
+  generateCompactTree(files: FileStructureInfo[]): string {
+    return this.generateCompactTreeWithImports(files);
   }
 
   clearCache(): void {
     this.nodeCache.clear();
     this.fileNodeCache.clear();
+    this.importCache.clear(); // NEW: Clear import cache
   }
 }
 
 // ============================================================================
-// COMPLETE TWO-PHASE AST PROCESSOR
+// COMPLETE TWO-PHASE AST PROCESSOR WITH IMPORT HANDLING
 // ============================================================================
 
 export class TwoPhaseASTProcessor {
@@ -538,9 +692,9 @@ export class TwoPhaseASTProcessor {
     try {
       this.streamUpdate(`🚀 TWO-PHASE: Starting processing...`);
       
-      // PHASE 1: Build minimal AST tree
-      this.streamUpdate(`📋 PHASE 1: Building minimal AST tree...`);
-      const fileStructures = this.buildMinimalTree(projectFiles);
+      // PHASE 1: Build minimal AST tree with imports
+      this.streamUpdate(`📋 PHASE 1: Building minimal AST tree with imports...`);
+      const fileStructures = this.buildMinimalTreeWithImports(projectFiles);
       
       if (fileStructures.length === 0) {
         this.streamUpdate(`❌ No relevant files found`);
@@ -548,11 +702,12 @@ export class TwoPhaseASTProcessor {
       }
 
       const totalNodes = fileStructures.reduce((sum, f) => sum + f.nodes.length, 0);
-      this.streamUpdate(`✅ Built tree: ${fileStructures.length} files, ${totalNodes} nodes`);
+      const totalImports = fileStructures.reduce((sum, f) => sum + (f.imports?.imports.length || 0), 0);
+      this.streamUpdate(`✅ Built tree: ${fileStructures.length} files, ${totalNodes} nodes, ${totalImports} imports`);
 
       // PHASE 1: AI Analysis
       this.streamUpdate(`🧠 PHASE 1: Sending tree for AI analysis...`);
-      const analysisResult = await this.analyzeTree(prompt, fileStructures);
+      const analysisResult = await this.analyzeTreeWithImports(prompt, fileStructures);
       
       if (!analysisResult.needsModification || analysisResult.targetNodes.length === 0) {
         this.streamUpdate(`⏭️ No modifications needed: ${analysisResult.reasoning}`);
@@ -563,19 +718,20 @@ export class TwoPhaseASTProcessor {
             file: 'system',
             description: `Analysis complete - no changes needed: ${analysisResult.reasoning}`,
             success: true,
-            details: { totalFiles: fileStructures.length, totalNodes }
+            details: { totalFiles: fileStructures.length, totalNodes, totalImports }
           }]
         };
       }
 
       this.streamUpdate(`✅ AI identified ${analysisResult.targetNodes.length} nodes for modification`);
 
-      // PHASE 2: Extract and modify
-      this.streamUpdate(`🔧 PHASE 2: Extracting full nodes and applying modifications...`);
-      const modificationResults = await this.extractAndModify(
+      // PHASE 2: Extract and modify with import handling
+      this.streamUpdate(`🔧 PHASE 2: Extracting full nodes and applying modifications with import handling...`);
+      const modificationResults = await this.extractAndModifyWithImports(
         analysisResult.targetNodes, 
         projectFiles, 
-        prompt
+        prompt,
+        fileStructures
       );
 
       const changes = this.buildChangeReport(modificationResults, fileStructures, analysisResult);
@@ -584,6 +740,7 @@ export class TwoPhaseASTProcessor {
       this.streamUpdate(`\n🎉 TWO-PHASE COMPLETE!`);
       this.streamUpdate(`   ✅ Modified: ${successCount}/${modificationResults.length} files`);
       this.streamUpdate(`   📊 Total nodes processed: ${totalNodes}`);
+      this.streamUpdate(`   📦 Total imports analyzed: ${totalImports}`);
       
       const tokenStats = this.tokenTracker.getStats();
       this.streamUpdate(`💰 Tokens used: ${tokenStats.totalTokens} (${tokenStats.apiCalls} API calls)`);
@@ -609,8 +766,8 @@ export class TwoPhaseASTProcessor {
     }
   }
 
-  // PHASE 1: Build minimal AST tree
-  private buildMinimalTree(projectFiles: Map<string, ProjectFile>): FileStructureInfo[] {
+  // ENHANCED PHASE 1: Build minimal AST tree with imports
+  private buildMinimalTreeWithImports(projectFiles: Map<string, ProjectFile>): FileStructureInfo[] {
     const fileStructures: FileStructureInfo[] = [];
     
     for (const [filePath, projectFile] of projectFiles) {
@@ -619,6 +776,7 @@ export class TwoPhaseASTProcessor {
       }
 
       const nodes = this.astAnalyzer.extractMinimalNodes(filePath, projectFiles);
+      const imports = this.astAnalyzer.extractFileImports(filePath, projectFiles);
       
       if (nodes.length === 0) {
         continue;
@@ -628,34 +786,46 @@ export class TwoPhaseASTProcessor {
 
       fileStructures.push({
         filePath: normalizedPath,
-        nodes
+        nodes,
+        imports: imports || undefined
       });
 
-      this.streamUpdate(`📄 ${normalizedPath}: ${nodes.length} nodes`);
+      const importCount = imports?.imports.length || 0;
+      const lucideStatus = imports?.hasLucideReact ? '✅' : '❌';
+      this.streamUpdate(`📄 ${normalizedPath}: ${nodes.length} nodes, ${importCount} imports ${lucideStatus}`);
     }
 
     return fileStructures;
   }
 
-  // PHASE 1: AI analysis of minimal tree
-  private async analyzeTree(userRequest: string, fileStructures: FileStructureInfo[]): Promise<AnalysisResponse> {
-    const compactTree = this.astAnalyzer.generateCompactTree(fileStructures);
+  // ENHANCED PHASE 1: AI analysis with import context
+  private async analyzeTreeWithImports(userRequest: string, fileStructures: FileStructureInfo[]): Promise<AnalysisResponse> {
+    const compactTree = this.astAnalyzer.generateCompactTreeWithImports(fileStructures);
 
     const analysisPrompt = `
 TASK: Analyze the project tree and identify nodes that need modification.
 
 USER REQUEST: "${userRequest}"
 
-PROJECT TREE:
+PROJECT TREE WITH IMPORT INFORMATION:
 ${compactTree}
 
-FORMAT: nodeId:tagName.className"displayText"(LineNumbers)
+FORMAT: 
+- nodeId:tagName.className"displayText"(LineNumbers)
+- 📦 IMPORTS: Lists all imports from each file
+- 🔍 STATUS: Shows if Lucide React and React are imported
+
+IMPORT CONTEXT:
+- If modification needs Lucide React icons, check if file has "✅ Lucide" 
+- If missing, note that imports will need to be added
+- Common Lucide icons: Plus, Minus, Search, User, Home, Settings, etc.
 
 INSTRUCTIONS:
 1. Identify which specific nodes need modification for the user request
 2. Focus on tagName, className, and displayText to understand each node
-3. Return ONLY nodes that actually need changes
-4. Use exact nodeId from the tree
+3. Consider import requirements - especially for icons or components
+4. Return ONLY nodes that actually need changes
+5. Use exact nodeId from the tree
 
 RESPONSE FORMAT (JSON):
 {
@@ -664,10 +834,10 @@ RESPONSE FORMAT (JSON):
     {
       "filePath": "src/pages/Home.tsx",
       "nodeId": "A1b2C3d4E5f6",
-      "reason": "Description of needed change"
+      "reason": "Description of needed change and any import requirements"
     }
   ],
-  "reasoning": "Overall explanation"
+  "reasoning": "Overall explanation including import considerations"
 }
 
 ANALYSIS:`;
@@ -680,7 +850,7 @@ ANALYSIS:`;
         messages: [{ role: 'user', content: analysisPrompt }],
       });
 
-      this.tokenTracker.logUsage(response.usage, `Phase 1: Tree Analysis`);
+      this.tokenTracker.logUsage(response.usage, `Phase 1: Tree Analysis with Imports`);
 
       const responseText = response.content[0]?.text || '';
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -710,11 +880,12 @@ ANALYSIS:`;
     }
   }
 
-  // PHASE 2: Extract and modify nodes
-  private async extractAndModify(
+  // ENHANCED PHASE 2: Extract and modify nodes with import handling
+  private async extractAndModifyWithImports(
     targetNodes: Array<{ filePath: string; nodeId: string; reason: string }>,
     projectFiles: Map<string, ProjectFile>,
-    userRequest: string
+    userRequest: string,
+    fileStructures: FileStructureInfo[]
   ): Promise<Array<{ filePath: string; success: boolean; modificationsApplied: number; error?: string }>> {
     
     // Group by file
@@ -742,14 +913,18 @@ ANALYSIS:`;
         const file = projectFiles.get(actualFileKey);
         const displayPath = file?.relativePath || actualFileKey;
         
+        // Get import info for this file
+        const fileStructure = fileStructures.find(fs => 
+          fs.filePath === displayPath || 
+          fs.filePath === this.normalizeFilePath(actualFileKey)
+        );
+        
         this.streamUpdate(`🔍 Extracting full nodes for ${fileTargets.length} targets in ${displayPath}...`);
         
         const nodeIds = fileTargets.map(t => t.nodeId);
-      this.streamUpdate(`🔍 Extracting full nodes for ${fileTargets.length} targets...`);
-const fullNodes = this.astAnalyzer.extractFullNodes(actualFileKey, nodeIds, projectFiles);
-this.streamUpdate(`📊 DEBUG: Found ${fullNodes.length} full nodes for IDs: ${nodeIds.join(', ')}`);
+        const fullNodes = this.astAnalyzer.extractFullNodes(actualFileKey, nodeIds, projectFiles);
+        this.streamUpdate(`📊 DEBUG: Found ${fullNodes.length} full nodes for IDs: ${nodeIds.join(', ')}`);
 
-        
         if (fullNodes.length === 0) {
           results.push({ 
             filePath: displayPath, 
@@ -762,9 +937,17 @@ this.streamUpdate(`📊 DEBUG: Found ${fullNodes.length} full nodes for IDs: ${n
 
         this.streamUpdate(`✅ Extracted ${fullNodes.length} full nodes`);
        
-        // Generate modifications
-        const modifications = await this.generateModifications(fullNodes, fileTargets, userRequest, displayPath);
-        this.streamUpdate(`📊 DEBUG: Generating modifications for ${fullNodes.length} nodes`);
+        // Generate modifications with import context
+        const modifications = await this.generateModificationsWithImports(
+          fullNodes, 
+          fileTargets, 
+          userRequest, 
+          displayPath,
+          fileStructure?.imports
+        );
+        
+        this.streamUpdate(`📊 DEBUG: Generating modifications for ${fullNodes.length} nodes with import context`);
+        
         if (modifications.length === 0) {
           results.push({ 
             filePath: displayPath, 
@@ -775,9 +958,17 @@ this.streamUpdate(`📊 DEBUG: Found ${fullNodes.length} full nodes for IDs: ${n
           continue;
         }
 
-        // Apply modifications
-        const applyResult = await this.applyModificationsFixed(modifications, actualFileKey, projectFiles, fullNodes);
-        this.streamUpdate(`📊 DEBUG: Applying ${modifications.length} modifications`);
+        // Apply modifications with import handling
+        const applyResult = await this.applyModificationsWithImports(
+          modifications, 
+          actualFileKey, 
+          projectFiles, 
+          fullNodes,
+          fileStructure?.imports
+        );
+        
+        this.streamUpdate(`📊 DEBUG: Applying ${modifications.length} modifications with import handling`);
+        
         results.push({
           filePath: displayPath,
           success: applyResult.success,
@@ -801,12 +992,13 @@ this.streamUpdate(`📊 DEBUG: Found ${fullNodes.length} full nodes for IDs: ${n
     return results;
   }
 
-  // Enhanced AI modification generation with better prompts
-  private async generateModifications(
+  // ENHANCED: AI modification generation with import context
+  private async generateModificationsWithImports(
     fullNodes: ModificationNode[],
     targets: Array<{ nodeId: string; reason: string }>,
     userRequest: string,
-    filePath: string
+    filePath: string,
+    currentImports?: FileImportInfo
   ): Promise<ModificationRequest[]> {
     
     const nodeDetails = fullNodes.map(node => {
@@ -837,22 +1029,57 @@ ${node.fullCode}
 `;
     }).join('\n---\n');
 
-    const modificationPrompt = `You are an EXPERT JSX CODE TRANSFORMER with advanced visual design capabilities. You specialize in comprehensive UI modifications that go beyond simple text changes.
+    // Build import context
+    let importContext = '';
+    if (currentImports) {
+      const importList = currentImports.imports.map(imp => 
+        `${imp.source}: [${imp.imports.join(', ')}]`
+      ).join('\n');
+      
+      importContext = `
+CURRENT IMPORTS IN FILE:
+${importList}
+
+IMPORT STATUS:
+- Lucide React: ${currentImports.hasLucideReact ? '✅ Available' : '❌ NOT IMPORTED'}
+- React: ${currentImports.hasReact ? '✅ Available' : '❌ NOT IMPORTED'}
+- All Sources: ${currentImports.allImportSources.join(', ')}
+`;
+    } else {
+      importContext = `
+CURRENT IMPORTS IN FILE: 
+No import information available
+
+IMPORT STATUS:
+- Lucide React: ❌ UNKNOWN
+- React: ❌ UNKNOWN
+`;
+    }
+
+    const modificationPrompt = `You are an EXPERT JSX CODE TRANSFORMER with advanced visual design capabilities and IMPORT MANAGEMENT expertise.
 
 USER REQUEST: "${userRequest}"
 FILE: ${filePath}
+
+${importContext}
 
 NODES TO MODIFY WITH FULL CONTEXT:
 ${nodeDetails}
 
 🎨 COMPREHENSIVE MODIFICATION INSTRUCTIONS:
 
-1. **VISUAL TRANSFORMATION PRIORITY**:
+1. **IMPORT REQUIREMENTS - CRITICAL**:
+   - ⚠️ If modification requires Lucide React icons and "❌ NOT IMPORTED", you MUST add required imports
+   - ⚠️ If modification requires React hooks and "❌ NOT IMPORTED", you MUST add React import
+   - Common Lucide icons: Plus, Minus, Search, User, Home, Settings, ChevronDown, etc.
+   - Format: { IconName1, IconName2 } from 'lucide-react'
+
+2. **VISUAL TRANSFORMATION PRIORITY**:
    - When user requests color changes, modify BOTH text content AND visual styling
    - Apply changes to className, style props, and CSS classes
    - Consider the ENTIRE visual appearance, not just text
 
-2. **INTELLIGENT COLOR MAPPING - OVERRIDE TAILWIND CONFIG**:
+3. **INTELLIGENT COLOR MAPPING - OVERRIDE TAILWIND CONFIG**:
    - ⚠️ CRITICAL: If element uses Tailwind classes, REMOVE them and use inline styles instead
    - Tailwind config may have custom colors that don't match user expectations
    - "blue" → style={{backgroundColor: '#3B82F6', color: 'white'}} (true blue, not config blue)
@@ -860,30 +1087,25 @@ ${nodeDetails}
    - "green" → style={{backgroundColor: '#10B981', color: 'white'}} (true green)
    - Add hover effects with onMouseEnter/onMouseLeave for true colors
 
-3. **BUTTON-SPECIFIC TRANSFORMATIONS - INLINE STYLE PRIORITY**:
+4. **BUTTON-SPECIFIC TRANSFORMATIONS - INLINE STYLE PRIORITY**:
    - ALWAYS use inline styles for colors to override any Tailwind configuration
    - Remove ALL Tailwind color classes (bg-*, text-*, border-* colors)
    - Keep layout classes (flex, grid, p-*, m-*, rounded-*) but override colors
    - Apply inline styles: backgroundColor, color, borderColor
    - Ensure text remains readable with proper contrast
 
-4. **COMPREHENSIVE STYLE UPDATES - BYPASS TAILWIND CONFIG**:
+5. **ICON INTEGRATION**:
+   - If adding icons, check if Lucide React is available
+   - Use appropriate icon names (Plus for add, Search for search, User for profile, etc.)
+   - Integrate icons naturally with existing UI patterns
+   - Maintain proper spacing and alignment
+
+6. **COMPREHENSIVE STYLE UPDATES - BYPASS TAILWIND CONFIG**:
    - Replace Tailwind color classes with inline style objects
    - Use standard web colors that match user expectations
    - Remove conflicting Tailwind classes entirely
    - Maintain responsive design with Tailwind layout classes only
    - Preserve accessibility with proper contrast ratios
-
-5. **ADVANCED PATTERN RECOGNITION**:
-   - "change [element] to [color]" = Full visual transformation
-   - "make [element] [color]" = Complete color scheme update
-   - "update [element] color" = Comprehensive styling change
-
-6. **STYLE CLASS INTELLIGENCE**:
-   - Analyze existing className for current color scheme
-   - Replace entire color families (primary-* → blue-*, accent-* → green-*)
-   - Maintain design system consistency
-   - Preserve layout classes (flex, grid, spacing)
 
 🔧 TECHNICAL REQUIREMENTS:
 
@@ -892,17 +1114,20 @@ ${nodeDetails}
 - Maintain semantic HTML structure
 - Apply modern Tailwind CSS best practices
 - Ensure cross-browser compatibility
+- Handle import requirements properly
 
-📐 EXAMPLE TRANSFORMATIONS - INLINE STYLE PRIORITY:
+📐 EXAMPLE TRANSFORMATIONS WITH IMPORTS:
 
 OLD: className="bg-primary-600 hover:bg-primary-700 text-white"
 NEW: className="px-6 py-2 rounded-lg font-semibold transition-colors" style={{backgroundColor: '#3B82F6', color: 'white'}}
 
 OLD: <Button variant="outline" className="bg-blue-500">Order Now</Button>  
-NEW: <Button className="px-6 py-2 rounded-lg font-semibold transition-colors" style={{backgroundColor: '#3B82F6', color: 'white', border: '2px solid #3B82F6'}} onMouseEnter={(e) => e.target.style.backgroundColor = '#2563EB'} onMouseLeave={(e) => e.target.style.backgroundColor = '#3B82F6'}>Order Now</Button>
+NEW: <Button className="px-6 py-2 rounded-lg font-semibold transition-colors flex items-center gap-2" style={{backgroundColor: '#3B82F6', color: 'white', border: '2px solid #3B82F6'}}><Plus size={16} />Order Now</Button>
+REQUIRED IMPORT: { Plus } from 'lucide-react'
 
 OLD: className="btn-primary text-blue-600"
-NEW: className="px-4 py-2 rounded-md font-medium" style={{backgroundColor: '#3B82F6', color: 'white'}}
+NEW: className="px-4 py-2 rounded-md font-medium flex items-center gap-2" style={{backgroundColor: '#3B82F6', color: 'white'}}><Search size={16} />Search</Button>
+REQUIRED IMPORT: { Search } from 'lucide-react'
 
 🎨 COLOR REFERENCE (Use these exact hex values):
 - Blue: #3B82F6 (background), #2563EB (hover), #1D4ED8 (active)
@@ -919,10 +1144,26 @@ You must respond with ONLY a valid JSON object in this exact format:
       "filePath": "${filePath}",
       "nodeId": "exact_node_id_from_above",
       "newCode": "complete JSX element with comprehensive visual styling applied",
-      "reasoning": "detailed explanation of all visual changes applied, including specific color classes, hover states, and design improvements made"
+      "reasoning": "detailed explanation of all visual changes applied, including specific color classes, hover states, and design improvements made",
+      "requiredImports": [
+        {
+          "source": "lucide-react",
+          "importType": "named",
+          "imports": ["Plus", "Search"],
+          "line": 0,
+          "fullStatement": "import { Plus, Search } from 'lucide-react';"
+        }
+      ]
     }
   ]
 }
+
+⚡ CRITICAL IMPORT RULES:
+1. If code uses Lucide icons and Lucide React is NOT imported, add requiredImports
+2. If code uses React hooks and React is NOT imported, add requiredImports  
+3. Only include requiredImports if the import is actually missing
+4. Use exact icon names from Lucide React library
+5. Format imports correctly: named imports for icons, default for React
 
 ⚡ CRITICAL: Focus on VISUAL IMPACT with TRUE COLORS. When user requests color changes:
 1. REMOVE all Tailwind color classes (bg-*, text-*, border-* colors)
@@ -930,6 +1171,7 @@ You must respond with ONLY a valid JSON object in this exact format:
 3. IGNORE Tailwind configuration - it may have custom colors
 4. ENSURE the color is unmistakably the requested color (true blue, not config blue)
 5. Transform the ENTIRE appearance, not just text content!
+6. ADD required imports if using icons or missing dependencies!
 
 Do not include any text before or after the JSON object.`;
 
@@ -941,7 +1183,7 @@ Do not include any text before or after the JSON object.`;
         messages: [{ role: 'user', content: modificationPrompt }],
       });
 
-      this.tokenTracker.logUsage(response.usage, `Phase 2: Code Modification Generation`);
+      this.tokenTracker.logUsage(response.usage, `Phase 2: Code Modification Generation with Imports`);
 
       const responseText = response.content[0]?.text || '';
       
@@ -958,7 +1200,9 @@ Do not include any text before or after the JSON object.`;
       }
       
       if (jsonData && jsonData.modifications) {
-        this.streamUpdate(`✅ Generated ${jsonData.modifications.length} modifications`);
+        const importCount = jsonData.modifications.reduce((sum: number, mod: any) => 
+          sum + (mod.requiredImports?.length || 0), 0);
+        this.streamUpdate(`✅ Generated ${jsonData.modifications.length} modifications with ${importCount} import requirements`);
         return jsonData.modifications;
       } else {
         this.streamUpdate(`⚠️ No valid JSON found, generating fallback modifications`);
@@ -971,53 +1215,13 @@ Do not include any text before or after the JSON object.`;
     }
   }
 
-  // Fallback modification generation
-  private generateFallbackModifications(
-    fullNodes: ModificationNode[],
-    targets: Array<{ nodeId: string; reason: string }>,
-    userRequest: string,
-    filePath: string
-  ): ModificationRequest[] {
-    return targets.map(target => {
-      const node = fullNodes.find(n => n.id === target.nodeId);
-      if (!node) {
-        return {
-          filePath,
-          nodeId: target.nodeId,
-          newCode: '',
-          reasoning: 'Node not found for modification'
-        };
-      }
-
-      // Simple fallback - return original code with a comment
-      let fallbackCode = node.fullCode;
-      
-      // For simple text changes, try basic replacement
-      if (userRequest.includes('change') && userRequest.includes('to')) {
-        const match = userRequest.match(/change\s+(.+?)\s+to\s+(.+)/i);
-        if (match) {
-          const [, oldText, newText] = match;
-          if (fallbackCode.includes(oldText)) {
-            fallbackCode = fallbackCode.replace(oldText, newText);
-          }
-        }
-      }
-
-      return {
-        filePath,
-        nodeId: target.nodeId,
-        newCode: fallbackCode,
-        reasoning: `Fallback modification applied for: ${userRequest}`
-      };
-    });
-  }
-
-  // Enhanced modification application with multiple strategies
-  private async applyModificationsFixed(
+  // ENHANCED: Apply modifications with import handling
+  private async applyModificationsWithImports(
     modifications: ModificationRequest[],
     fileKey: string,
     projectFiles: Map<string, ProjectFile>,
-    fullNodes: ModificationNode[]
+    fullNodes: ModificationNode[],
+    currentImports?: FileImportInfo
   ): Promise<{ filePath: string; success: boolean; modificationsApplied: number; error?: string }> {
     
     const projectFile = projectFiles.get(fileKey);
@@ -1037,6 +1241,17 @@ Do not include any text before or after the JSON object.`;
     let content = projectFile.content;
     let appliedCount = 0;
 
+    // Step 1: Handle import additions
+    const allRequiredImports = modifications
+      .flatMap(mod => mod.requiredImports || [])
+      .filter(imp => imp); // Remove undefined/null
+
+    if (allRequiredImports.length > 0) {
+      this.streamUpdate(`📦 Processing ${allRequiredImports.length} import requirements...`);
+      content = await this.addRequiredImports(content, allRequiredImports, currentImports);
+    }
+
+    // Step 2: Apply code modifications
     // Sort modifications by position (reverse order to avoid offset issues)
     const sortedMods = modifications
       .map(mod => ({
@@ -1141,10 +1356,121 @@ Do not include any text before or after the JSON object.`;
     return { filePath: displayPath, success: appliedCount > 0, modificationsApplied: appliedCount };
   }
 
-  // Helper methods
-  private escapeRegExp(str: string): string {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\      if (jsonData');
+  // NEW: Add required imports to file content
+  private async addRequiredImports(
+    content: string, 
+    requiredImports: ImportInfo[], 
+    currentImports?: FileImportInfo
+  ): Promise<string> {
+    
+    const lines = content.split('\n');
+    const newImports: string[] = [];
+
+    // Group required imports by source
+    const importsBySource = new Map<string, string[]>();
+    for (const imp of requiredImports) {
+      if (!importsBySource.has(imp.source)) {
+        importsBySource.set(imp.source, []);
+      }
+      importsBySource.get(imp.source)!.push(...imp.imports);
+    }
+
+    // Check each source and merge/add imports
+    for (const [source, newImportNames] of importsBySource) {
+      const existingImport = currentImports?.imports.find(imp => imp.source === source);
+      
+      if (existingImport) {
+        // Merge with existing import
+        const uniqueNewImports = newImportNames.filter(name => 
+          !existingImport.imports.includes(name) && 
+          !existingImport.imports.includes(name.split(' as ')[0]) // Handle aliases
+        );
+        
+        if (uniqueNewImports.length > 0) {
+          const allImports = [...existingImport.imports, ...uniqueNewImports].sort();
+          const newImportStatement = `import { ${allImports.join(', ')} } from '${source}';`;
+          
+          // Replace existing import line
+          const lineIndex = existingImport.line - 1;
+          if (lineIndex >= 0 && lineIndex < lines.length) {
+            lines[lineIndex] = newImportStatement;
+            this.streamUpdate(`   📦 Updated existing import: ${source}`);
+          }
+        }
+      } else {
+        // Add new import
+        const uniqueImports = [...new Set(newImportNames)].sort();
+        const newImportStatement = `import { ${uniqueImports.join(', ')} } from '${source}';`;
+        newImports.push(newImportStatement);
+        this.streamUpdate(`   📦 Adding new import: ${source}`);
+      }
+    }
+
+    // Add new imports at the top (after existing imports or at the beginning)
+    if (newImports.length > 0) {
+      let insertIndex = 0;
+      
+      // Find the last import line
+      if (currentImports && currentImports.imports.length > 0) {
+        const lastImportLine = Math.max(...currentImports.imports.map(imp => imp.line));
+        insertIndex = lastImportLine;
+      }
+      
+      // Insert new imports
+      for (let i = newImports.length - 1; i >= 0; i--) {
+        lines.splice(insertIndex, 0, newImports[i]);
+      }
+    }
+
+    return lines.join('\n');
   }
+
+  // Fallback modification generation (unchanged but with import support)
+  private generateFallbackModifications(
+    fullNodes: ModificationNode[],
+    targets: Array<{ nodeId: string; reason: string }>,
+    userRequest: string,
+    filePath: string
+  ): ModificationRequest[] {
+    return targets.map(target => {
+      const node = fullNodes.find(n => n.id === target.nodeId);
+      if (!node) {
+        return {
+          filePath,
+          nodeId: target.nodeId,
+          newCode: '',
+          reasoning: 'Node not found for modification'
+        };
+      }
+
+      // Simple fallback - return original code with a comment
+      let fallbackCode = node.fullCode;
+      
+      // For simple text changes, try basic replacement
+      if (userRequest.includes('change') && userRequest.includes('to')) {
+        const match = userRequest.match(/change\s+(.+?)\s+to\s+(.+)/i);
+        if (match) {
+          const [, oldText, newText] = match;
+          if (fallbackCode.includes(oldText)) {
+            fallbackCode = fallbackCode.replace(oldText, newText);
+          }
+        }
+      }
+
+      return {
+        filePath,
+        nodeId: target.nodeId,
+        newCode: fallbackCode,
+        reasoning: `Fallback modification applied for: ${userRequest}`
+      };
+    });
+  }
+
+  // Helper methods (unchanged)
+ private escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 
   private calculateSimilarity(str1: string, str2: string): number {
     if (str1 === str2) return 1.0;
@@ -1173,14 +1499,16 @@ Do not include any text before or after the JSON object.`;
     const changes: Array<any> = [];
 
     // Add summary
+    const totalImports = fileStructures.reduce((sum, f) => sum + (f.imports?.imports.length || 0), 0);
     changes.push({
       type: 'two_phase_analysis',
       file: 'system',
-      description: `Two-phase processing: ${fileStructures.length} files, ${fileStructures.reduce((sum, f) => sum + f.nodes.length, 0)} nodes analyzed`,
+      description: `Two-phase processing: ${fileStructures.length} files, ${fileStructures.reduce((sum, f) => sum + f.nodes.length, 0)} nodes, ${totalImports} imports analyzed`,
       success: true,
       details: {
         filesAnalyzed: fileStructures.length,
         totalNodes: fileStructures.reduce((sum, f) => sum + f.nodes.length, 0),
+        totalImports,
         targetNodesIdentified: analysisResult.targetNodes.length,
         reasoning: analysisResult.reasoning
       }
@@ -1192,7 +1520,7 @@ Do not include any text before or after the JSON object.`;
         changes.push({
           type: 'file_modified',
           file: result.filePath,
-          description: `Applied ${result.modificationsApplied} modifications`,
+          description: `Applied ${result.modificationsApplied} modifications with import handling`,
           success: true,
           details: {
             modificationsApplied: result.modificationsApplied
@@ -1214,41 +1542,41 @@ Do not include any text before or after the JSON object.`;
     return changes;
   }
 
-private findFileKey(relativePath: string, projectFiles: Map<string, ProjectFile>): string | null {
-  // Normalize the target path
-  const normalizedTarget = relativePath.replace(/\\/g, '/');
-  
-  // Direct match
-  if (projectFiles.has(relativePath)) {
-    return relativePath;
-  }
-  
-  // Try normalized version
-  for (const [key, file] of projectFiles) {
-    const normalizedKey = key.replace(/\\/g, '/');
-    const normalizedFileRelative = file.relativePath?.replace(/\\/g, '/');
+  private findFileKey(relativePath: string, projectFiles: Map<string, ProjectFile>): string | null {
+    // Normalize the target path
+    const normalizedTarget = relativePath.replace(/\\/g, '/');
     
-    if (normalizedKey === normalizedTarget || 
-        normalizedFileRelative === normalizedTarget ||
-        normalizedKey.endsWith('/' + normalizedTarget) ||
-        normalizedFileRelative?.endsWith('/' + normalizedTarget)) {
-      return key;
+    // Direct match
+    if (projectFiles.has(relativePath)) {
+      return relativePath;
     }
-  }
-  
-  // Fallback: exact filename match (TypeScript-safe)
-  const targetFilename = normalizedTarget.split('/').pop();
-  if (targetFilename) {  // ✅ Check if targetFilename exists
+    
+    // Try normalized version
     for (const [key, file] of projectFiles) {
-      if (key.includes(targetFilename) || 
-          (file.relativePath && file.relativePath.includes(targetFilename))) {  // ✅ Safe check
+      const normalizedKey = key.replace(/\\/g, '/');
+      const normalizedFileRelative = file.relativePath?.replace(/\\/g, '/');
+      
+      if (normalizedKey === normalizedTarget || 
+          normalizedFileRelative === normalizedTarget ||
+          normalizedKey.endsWith('/' + normalizedTarget) ||
+          normalizedFileRelative?.endsWith('/' + normalizedTarget)) {
         return key;
       }
     }
+    
+    // Fallback: exact filename match (TypeScript-safe)
+    const targetFilename = normalizedTarget.split('/').pop();
+    if (targetFilename) {  // ✅ Check if targetFilename exists
+      for (const [key, file] of projectFiles) {
+        if (key.includes(targetFilename) || 
+            (file.relativePath && file.relativePath.includes(targetFilename))) {  // ✅ Safe check
+          return key;
+        }
+      }
+    }
+    
+    return null;
   }
-  
-  return null;
-}
 
   private resolveFilePath(projectFile: ProjectFile): string {
     if (isAbsolute(projectFile.path)) {

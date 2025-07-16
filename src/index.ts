@@ -12,12 +12,12 @@ import * as fs from "fs";
 import userRoutes from "./routes/users";
 import projectRoutes from "./routes/projects";
 import messageRoutes, { setMessageDB } from "./routes/messages";
-import aiChatRoute from "./routes/agents";
 import {
   StatelessSessionManager,
 } from "./routes/session";
 import { initializeGenerationRoutes } from "./routes/generation";
 import { initializeModificationRoutes } from "./routes/modification";
+import {initializeAgentRoutes} from './routes/agents'
 
 const PORT = process.env.PORT || 3000;
 const anthropic = new Anthropic();
@@ -109,7 +109,7 @@ app.use("/api/messages", messageRoutes);
 
 app.use("/api/generate", initializeGenerationRoutes(anthropic, messageDB, sessionManager));
 app.use("/api/modify", initializeModificationRoutes(anthropic, messageDB, redis, sessionManager));
-app.use("/api/design", aiChatRoute);
+app.use("/api/design", initializeAgentRoutes(anthropic, messageDB, sessionManager));
 
 
 // Cleanup function for temp directories
