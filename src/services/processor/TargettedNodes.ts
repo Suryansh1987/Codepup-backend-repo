@@ -50,7 +50,7 @@ interface ModificationNode extends AnalysisNode {
   };
 }
 
-// NEW: Import information interfaces
+// Import information interfaces
 interface ImportInfo {
   source: string;
   importType: 'default' | 'named' | 'namespace' | 'side-effect';
@@ -70,7 +70,7 @@ interface FileImportInfo {
 interface FileStructureInfo {
   filePath: string;
   nodes: AnalysisNode[];
-  imports?: FileImportInfo; // NEW: Added import info
+  imports?: FileImportInfo;
 }
 
 interface ModificationRequest {
@@ -78,7 +78,7 @@ interface ModificationRequest {
   nodeId: string;
   newCode: string;
   reasoning: string;
-  requiredImports?: ImportInfo[]; // NEW: Required imports for the modification
+  requiredImports?: ImportInfo[];
 }
 
 interface AnalysisResponse {
@@ -137,7 +137,7 @@ class TokenTracker {
 class DynamicASTAnalyzer {
   private streamCallback?: (message: string) => void;
   private nodeCache = new Map<string, any[]>();
-  private importCache = new Map<string, FileImportInfo>(); // NEW: Import cache
+  private importCache = new Map<string, FileImportInfo>();
 
   setStreamCallback(callback: (message: string) => void): void {
     this.streamCallback = callback;
@@ -149,7 +149,7 @@ class DynamicASTAnalyzer {
     }
   }
 
-  // NEW: Extract import information from file
+  // Extract import information from file
   private extractImports(filePath: string, content: string): FileImportInfo {
     const cacheKey = `${filePath}_${content.length}`;
     
@@ -230,24 +230,6 @@ class DynamicASTAnalyzer {
 
     this.importCache.set(cacheKey, fileImportInfo);
     return fileImportInfo;
-  }
-
-  // NEW: Generate import statements
-  private generateImportStatement(importInfo: ImportInfo): string {
-    const { source, importType, imports } = importInfo;
-
-    switch (importType) {
-      case 'default':
-        return `import ${imports[0]} from '${source}';`;
-      case 'named':
-        return `import { ${imports.join(', ')} } from '${source}';`;
-      case 'namespace':
-        return `import * as ${imports[0]} from '${source}';`;
-      case 'side-effect':
-        return `import '${source}';`;
-      default:
-        return `import { ${imports.join(', ')} } from '${source}';`;
-    }
   }
 
   private createStableNodeId(node: any, content: string, index: number): string {
@@ -337,7 +319,7 @@ class DynamicASTAnalyzer {
     };
   }
 
-  // UNIVERSAL: Extract elements from any file
+  // Extract text content - maximum 5 words from any text within tags
   private extractElementData(node: any, content: string): {
     displayText?: string;
     props: Record<string, any>;
@@ -372,11 +354,11 @@ class DynamicASTAnalyzer {
       }
     }
 
-    // Extract all text content
+    // Extract text content - no hardcoded keywords, just first 5 words max
     let displayText: string | undefined;
     if (node.children) {
       const extractText = (child: any, depth: number = 0): string => {
-        if (!child || depth > 5) return '';
+        if (!child || depth > 3) return '';
         
         if (child.type === 'JSXText') {
           return child.value.trim();
@@ -385,6 +367,9 @@ class DynamicASTAnalyzer {
             return child.expression.value;
           } else if (child.expression?.type === 'Identifier') {
             return `{${child.expression.name}}`;
+          } else if (child.expression?.type === 'TemplateLiteral') {
+            const quasis = child.expression.quasis || [];
+            return quasis.map((q: any) => q.value?.cooked || '').join(' ');
           }
         } else if (child.type === 'JSXElement' && child.children) {
           return child.children
@@ -399,10 +384,19 @@ class DynamicASTAnalyzer {
         .map((child: any) => extractText(child))
         .filter((text: string) => text.trim().length > 0)
         .join(' ')
+        .replace(/\s+/g, ' ')
         .trim();
 
       if (allText) {
-        displayText = allText.length > 100 ? allText.substring(0, 97) + '...' : allText;
+        // Simple approach: take first 5 words maximum, minimum 1 word
+        const words = allText.split(/\s+/);
+        const maxWords = Math.min(words.length, 5);
+        const selectedWords = words.slice(0, maxWords);
+        
+        displayText = selectedWords.join(' ');
+        if (words.length > 5) {
+          displayText += '...';
+        }
       }
     }
 
@@ -515,7 +509,7 @@ class DynamicASTAnalyzer {
     return minimalNodes;
   }
 
-  // NEW: Extract imports for a file
+  // Extract imports for a file
   extractFileImports(filePath: string, projectFiles: Map<string, ProjectFile>): FileImportInfo | null {
     if (!filePath.match(/\.(tsx?|jsx?)$/i)) {
       return null;
@@ -591,16 +585,22 @@ class DynamicASTAnalyzer {
     return result;
   }
 
-  // ENHANCED: Generate compact tree with import info
+  // Generate compact tree with import info and text content
   generateCompactTreeWithImports(files: FileStructureInfo[]): string {
     return files.map(file => {
       const nodeList = file.nodes.map(node => {
         const className = node.className ? `.${node.className.split(' ')[0]}` : '';
-        const text = node.displayText ? `"${node.displayText}"` : '';
+        
+        // Simple text display - just show the extracted text (max 5 words)
+        let textDisplay = '';
+        if (node.displayText && node.displayText.trim()) {
+          textDisplay = ` "${node.displayText}"`;
+        }
+        
         const hasHandlers = Object.keys(node.props || {}).some(key => key.startsWith('on')) ? '{interactive}' : '';
         const lines = `(L${node.startLine}${node.endLine !== node.startLine ? `-${node.endLine}` : ''})`;
         
-        return `${node.id}:${node.tagName}${className}${text}${hasHandlers}${lines}`;
+        return `${node.id}:${node.tagName}${className}${textDisplay}${hasHandlers}${lines}`;
       }).join('\n    ');
 
       // Add import information
@@ -628,7 +628,7 @@ class DynamicASTAnalyzer {
   clearCache(): void {
     this.nodeCache.clear();
     this.fileNodeCache.clear();
-    this.importCache.clear(); // NEW: Clear import cache
+    this.importCache.clear();
   }
 }
 
@@ -766,7 +766,7 @@ export class TwoPhaseASTProcessor {
     }
   }
 
-  // ENHANCED PHASE 1: Build minimal AST tree with imports
+  // Build minimal AST tree with imports
   private buildMinimalTreeWithImports(projectFiles: Map<string, ProjectFile>): FileStructureInfo[] {
     const fileStructures: FileStructureInfo[] = [];
     
@@ -798,7 +798,7 @@ export class TwoPhaseASTProcessor {
     return fileStructures;
   }
 
-  // ENHANCED PHASE 1: AI analysis with import context
+  // AI analysis with import context and text content
   private async analyzeTreeWithImports(userRequest: string, fileStructures: FileStructureInfo[]): Promise<AnalysisResponse> {
     const compactTree = this.astAnalyzer.generateCompactTreeWithImports(fileStructures);
 
@@ -807,13 +807,32 @@ TASK: Analyze the project tree and identify nodes that need modification.
 
 USER REQUEST: "${userRequest}"
 
-PROJECT TREE WITH IMPORT INFORMATION:
+PROJECT TREE WITH IMPORT AND TEXT CONTENT:
 ${compactTree}
 
-FORMAT: 
-- nodeId:tagName.className"displayText"(LineNumbers)
+FORMAT EXPLANATION: 
+- nodeId:tagName.className "text content" {interactive} (LineNumbers)
 - 📦 IMPORTS: Lists all imports from each file
 - 🔍 STATUS: Shows if Lucide React and React are imported
+
+TEXT CONTENT UNDERSTANDING:
+- Text content shows up to 5 words from each element for semantic understanding
+- Use text content to identify sections, buttons, navigation, etc.
+- Text helps identify the purpose and context of each UI element
+- No hardcoded priorities - treat all text content equally
+
+SEMANTIC ANALYSIS INSTRUCTIONS:
+1. **Section Identification**: Use text content to understand page sections
+   - Look for text like "Contact", "About", "Services", etc.
+   - Match user requests to relevant text content
+
+2. **Content-Based Targeting**: Match user requests to relevant text content
+   - "change contact section" → look for nodes with "contact" in text
+   - "update navigation" → look for nodes with nav-related text
+   - "modify button" → look for button elements with relevant text
+
+3. **Contextual Understanding**: Consider tag names, classes, AND text content
+   - Combine all available information for accurate targeting
 
 IMPORT CONTEXT:
 - If modification needs Lucide React icons, check if file has "✅ Lucide" 
@@ -822,10 +841,11 @@ IMPORT CONTEXT:
 
 INSTRUCTIONS:
 1. Identify which specific nodes need modification for the user request
-2. Focus on tagName, className, and displayText to understand each node
+2. Use tagName, className, AND text content for semantic understanding
 3. Consider import requirements - especially for icons or components
 4. Return ONLY nodes that actually need changes
 5. Use exact nodeId from the tree
+6. Match user intent with the most relevant elements based on all available context
 
 RESPONSE FORMAT (JSON):
 {
@@ -834,10 +854,10 @@ RESPONSE FORMAT (JSON):
     {
       "filePath": "src/pages/Home.tsx",
       "nodeId": "A1b2C3d4E5f6",
-      "reason": "Description of needed change and any import requirements"
+      "reason": "Description of needed change, mentioning relevant text content and any import requirements"
     }
   ],
-  "reasoning": "Overall explanation including import considerations"
+  "reasoning": "Overall explanation including text content analysis and import considerations"
 }
 
 ANALYSIS:`;
@@ -850,7 +870,7 @@ ANALYSIS:`;
         messages: [{ role: 'user', content: analysisPrompt }],
       });
 
-      this.tokenTracker.logUsage(response.usage, `Phase 1: Tree Analysis with Imports`);
+      this.tokenTracker.logUsage(response.usage, `Phase 1: Tree Analysis with Imports and Text Content`);
 
       const responseText = response.content[0]?.text || '';
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -880,7 +900,7 @@ ANALYSIS:`;
     }
   }
 
-  // ENHANCED PHASE 2: Extract and modify nodes with import handling
+  // Extract and modify nodes with import handling
   private async extractAndModifyWithImports(
     targetNodes: Array<{ filePath: string; nodeId: string; reason: string }>,
     projectFiles: Map<string, ProjectFile>,
@@ -992,7 +1012,7 @@ ANALYSIS:`;
     return results;
   }
 
-  // ENHANCED: AI modification generation with import context
+  // AI modification generation with import context
   private async generateModificationsWithImports(
     fullNodes: ModificationNode[],
     targets: Array<{ nodeId: string; reason: string }>,
@@ -1087,54 +1107,25 @@ ${nodeDetails}
    - "green" → style={{backgroundColor: '#10B981', color: 'white'}} (true green)
    - Add hover effects with onMouseEnter/onMouseLeave for true colors
 
-4. **BUTTON-SPECIFIC TRANSFORMATIONS - INLINE STYLE PRIORITY**:
-   - ALWAYS use inline styles for colors to override any Tailwind configuration
-   - Remove ALL Tailwind color classes (bg-*, text-*, border-* colors)
-   - Keep layout classes (flex, grid, p-*, m-*, rounded-*) but override colors
-   - Apply inline styles: backgroundColor, color, borderColor
-   - Ensure text remains readable with proper contrast
+4. **TEXT CONTENT AWARENESS**:
+   - Use the provided TEXT field to understand element purpose
+   - Modify content based on user request and current text context
+   - Preserve meaningful text while applying requested changes
 
-5. **ICON INTEGRATION**:
-   - If adding icons, check if Lucide React is available
-   - Use appropriate icon names (Plus for add, Search for search, User for profile, etc.)
-   - Integrate icons naturally with existing UI patterns
-   - Maintain proper spacing and alignment
-
-6. **COMPREHENSIVE STYLE UPDATES - BYPASS TAILWIND CONFIG**:
+5. **COMPREHENSIVE STYLE UPDATES**:
    - Replace Tailwind color classes with inline style objects
    - Use standard web colors that match user expectations
    - Remove conflicting Tailwind classes entirely
    - Maintain responsive design with Tailwind layout classes only
-   - Preserve accessibility with proper contrast ratios
 
 🔧 TECHNICAL REQUIREMENTS:
 
 - Return COMPLETE, VALID JSX with full styling applied
 - Preserve ALL existing functionality and event handlers
 - Maintain semantic HTML structure
-- Apply modern Tailwind CSS best practices
+- Apply modern CSS best practices
 - Ensure cross-browser compatibility
 - Handle import requirements properly
-
-📐 EXAMPLE TRANSFORMATIONS WITH IMPORTS:
-
-OLD: className="bg-primary-600 hover:bg-primary-700 text-white"
-NEW: className="px-6 py-2 rounded-lg font-semibold transition-colors" style={{backgroundColor: '#3B82F6', color: 'white'}}
-
-OLD: <Button variant="outline" className="bg-blue-500">Order Now</Button>  
-NEW: <Button className="px-6 py-2 rounded-lg font-semibold transition-colors flex items-center gap-2" style={{backgroundColor: '#3B82F6', color: 'white', border: '2px solid #3B82F6'}}><Plus size={16} />Order Now</Button>
-REQUIRED IMPORT: { Plus } from 'lucide-react'
-
-OLD: className="btn-primary text-blue-600"
-NEW: className="px-4 py-2 rounded-md font-medium flex items-center gap-2" style={{backgroundColor: '#3B82F6', color: 'white'}}><Search size={16} />Search</Button>
-REQUIRED IMPORT: { Search } from 'lucide-react'
-
-🎨 COLOR REFERENCE (Use these exact hex values):
-- Blue: #3B82F6 (background), #2563EB (hover), #1D4ED8 (active)
-- Red: #EF4444 (background), #DC2626 (hover), #B91C1C (active)  
-- Green: #10B981 (background), #059669 (hover), #047857 (active)
-- Yellow: #F59E0B (background), #D97706 (hover), #B45309 (active)
-- Purple: #8B5CF6 (background), #7C3AED (hover), #6D28D9 (active)
 
 You must respond with ONLY a valid JSON object in this exact format:
 
@@ -1144,7 +1135,7 @@ You must respond with ONLY a valid JSON object in this exact format:
       "filePath": "${filePath}",
       "nodeId": "exact_node_id_from_above",
       "newCode": "complete JSX element with comprehensive visual styling applied",
-      "reasoning": "detailed explanation of all visual changes applied, including specific color classes, hover states, and design improvements made",
+      "reasoning": "detailed explanation of all changes applied, including text content considerations",
       "requiredImports": [
         {
           "source": "lucide-react",
@@ -1165,13 +1156,7 @@ You must respond with ONLY a valid JSON object in this exact format:
 4. Use exact icon names from Lucide React library
 5. Format imports correctly: named imports for icons, default for React
 
-⚡ CRITICAL: Focus on VISUAL IMPACT with TRUE COLORS. When user requests color changes:
-1. REMOVE all Tailwind color classes (bg-*, text-*, border-* colors)
-2. USE inline styles with exact hex colors that match user expectations  
-3. IGNORE Tailwind configuration - it may have custom colors
-4. ENSURE the color is unmistakably the requested color (true blue, not config blue)
-5. Transform the ENTIRE appearance, not just text content!
-6. ADD required imports if using icons or missing dependencies!
+⚡ CRITICAL: Focus on user request with intelligent text content understanding!
 
 Do not include any text before or after the JSON object.`;
 
@@ -1215,7 +1200,7 @@ Do not include any text before or after the JSON object.`;
     }
   }
 
-  // ENHANCED: Apply modifications with import handling
+  // Apply modifications with import handling
   private async applyModificationsWithImports(
     modifications: ModificationRequest[],
     fileKey: string,
@@ -1244,7 +1229,7 @@ Do not include any text before or after the JSON object.`;
     // Step 1: Handle import additions
     const allRequiredImports = modifications
       .flatMap(mod => mod.requiredImports || [])
-      .filter(imp => imp); // Remove undefined/null
+      .filter(imp => imp);
 
     if (allRequiredImports.length > 0) {
       this.streamUpdate(`📦 Processing ${allRequiredImports.length} import requirements...`);
@@ -1356,7 +1341,7 @@ Do not include any text before or after the JSON object.`;
     return { filePath: displayPath, success: appliedCount > 0, modificationsApplied: appliedCount };
   }
 
-  // NEW: Add required imports to file content
+  // Add required imports to file content
   private async addRequiredImports(
     content: string, 
     requiredImports: ImportInfo[], 
@@ -1383,7 +1368,7 @@ Do not include any text before or after the JSON object.`;
         // Merge with existing import
         const uniqueNewImports = newImportNames.filter(name => 
           !existingImport.imports.includes(name) && 
-          !existingImport.imports.includes(name.split(' as ')[0]) // Handle aliases
+          !existingImport.imports.includes(name.split(' as ')[0])
         );
         
         if (uniqueNewImports.length > 0) {
@@ -1425,7 +1410,7 @@ Do not include any text before or after the JSON object.`;
     return lines.join('\n');
   }
 
-  // Fallback modification generation (unchanged but with import support)
+  // Fallback modification generation
   private generateFallbackModifications(
     fullNodes: ModificationNode[],
     targets: Array<{ nodeId: string; reason: string }>,
@@ -1466,11 +1451,10 @@ Do not include any text before or after the JSON object.`;
     });
   }
 
-  // Helper methods (unchanged)
- private escapeRegExp(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
+  // Helper methods
+  private escapeRegExp(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\      this.tokenTracker.logUsage(response.usage, `Phase ');
+  }
 
   private calculateSimilarity(str1: string, str2: string): number {
     if (str1 === str2) return 1.0;
@@ -1564,12 +1548,12 @@ Do not include any text before or after the JSON object.`;
       }
     }
     
-    // Fallback: exact filename match (TypeScript-safe)
+    // Fallback: exact filename match
     const targetFilename = normalizedTarget.split('/').pop();
-    if (targetFilename) {  // ✅ Check if targetFilename exists
+    if (targetFilename) {
       for (const [key, file] of projectFiles) {
         if (key.includes(targetFilename) || 
-            (file.relativePath && file.relativePath.includes(targetFilename))) {  // ✅ Safe check
+            (file.relativePath && file.relativePath.includes(targetFilename))) {
           return key;
         }
       }
