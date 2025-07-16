@@ -535,6 +535,134 @@ router.get("/schema/:projectId", async (req: Request, res: Response) => {
   }
 });
 
+router.get(
+  "/generate-frontend-stream/:projectId",
+  async (req: Request, res: Response) => {
+    const { projectId } = req.params;
+
+    // Set SSE headers
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Cache-Control",
+    });
+
+    // Send initial connection message
+    res.write(
+      `data: ${JSON.stringify({
+        type: "connected",
+        message: "Connected to frontend generation stream",
+      })}\n\n`
+    );
+
+    try {
+      const conversation = await conversationService.getConversationByProject(
+        parseInt(projectId)
+      );
+
+      if (
+        !conversation ||
+        !conversation.designChoices ||
+        !conversation.generatedFiles
+      ) {
+        res.write(
+          `data: ${JSON.stringify({
+            type: "error",
+            message: "Missing design choices or file structure",
+          })}\n\n`
+        );
+        res.end();
+        return;
+      }
+
+      // Extract needed data
+      const designChoices = conversation.designChoices;
+      const generatedFiles = conversation.generatedFiles as any;
+      const fileStructure = generatedFiles.fileStructure;
+      const backendFiles = {
+        "supabase/migrations/001_initial_schema.sql":
+          generatedFiles["supabase/migrations/001_initial_schema.sql"],
+        "supabase/seed.sql": generatedFiles["supabase/seed.sql"],
+        "src/types/index.ts": generatedFiles["src/types/index.ts"],
+      };
+
+      // Send progress updates
+      const progressCallback = (progress: any) => {
+        res.write(
+          `data: ${JSON.stringify({
+            type: "progress",
+            ...progress,
+          })}\n\n`
+        );
+      };
+
+      // Start generation with progress callback
+      res.write(
+        `data: ${JSON.stringify({
+          type: "progress",
+          stage: "Starting frontend generation...",
+          filesGenerated: [],
+          totalSize: 0,
+        })}\n\n`
+      );
+
+      const result = await claudeService.generateFrontendFilesWithProgress(
+        designChoices,
+        fileStructure,
+        backendFiles,
+        conversation.userId.toString(),
+        progressCallback
+      );
+
+      if (result.success) {
+        // Update database
+        const allFiles = {
+          ...generatedFiles,
+          ...result.functionInput.files,
+        };
+
+        await conversationService.updateConversationByProject(
+          parseInt(projectId),
+          {
+            currentStep: "frontend_completed",
+            generatedFiles: allFiles,
+          }
+        );
+
+        // Send completion message
+        res.write(
+          `data: ${JSON.stringify({
+            type: "completed",
+            files: Object.keys(result.functionInput.files),
+            fileCount: Object.keys(result.functionInput.files).length,
+            message: "Frontend generation completed successfully!",
+          })}\n\n`
+        );
+      } else {
+        res.write(
+          `data: ${JSON.stringify({
+            type: "error",
+            message: "Frontend generation failed",
+            details: result,
+          })}\n\n`
+        );
+      }
+    } catch (error) {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "error",
+          message: "Generation error occurred",
+          details: error instanceof Error ? error.message : "Unknown error",
+        })}\n\n`
+      );
+    }
+
+    res.end();
+  }
+);
+
 //@ts-ignore
 router.post("/generate-frontend", async (req: Request, res: Response) => {
   try {
@@ -562,6 +690,8 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
     const designChoices = conversation.designChoices;
     const generatedFiles = conversation.generatedFiles as any;
     const fileStructure = generatedFiles.fileStructure;
+    const tailwindConfig = generatedFiles["tailwind.config.ts"];
+    const indexCss = generatedFiles["globals.css"];
     const backendFiles = {
       "supabase/migrations/001_initial_schema.sql":
         generatedFiles["supabase/migrations/001_initial_schema.sql"],
@@ -575,48 +705,51 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
       `🗄️ Backend files available:`,
       Object.keys(backendFiles).length
     );
-
+    console.log(`🎨 Tailwind config available:`, tailwindConfig);
+    console.log(`📜 Index CSS available:`, indexCss);
     const result = await claudeService.generateFrontendFiles(
       designChoices,
       fileStructure,
       backendFiles,
-      conversation.userId.toString()
+      conversation.userId.toString(),
+      tailwindConfig,
+      indexCss
     );
+    res.json(result);
+    // if (result.success) {
+    //   // Merge with existing files
+    //   const allFiles = {
+    //     ...generatedFiles,
+    //     ...result.functionInput.files,
+    //   };
 
-    if (result.success) {
-      // Merge with existing files
-      const allFiles = {
-        ...generatedFiles,
-        ...result.functionInput.files,
-      };
+    //   await conversationService.updateConversationByProject(projectId, {
+    //     currentStep: "frontend_completed",
+    //     generatedFiles: allFiles,
+    //   });
 
-      await conversationService.updateConversationByProject(projectId, {
-        currentStep: "frontend_completed",
-        generatedFiles: allFiles,
-      });
+    //   await conversationService.saveMessageByProject(projectId, {
+    //     agentResponse: "Frontend application generated successfully!",
+    //     functionCalled: "generate_frontend_application",
+    //   });
 
-      await conversationService.saveMessageByProject(projectId, {
-        agentResponse: "Frontend application generated successfully!",
-        functionCalled: "generate_frontend_application",
-      });
-
-      return res.json({
-        success: true,
-        step: "frontend_completed",
-        files: result.functionInput.files,
-        componentsSummary: result.functionInput.componentsSummary,
-        technicalSpecs: result.functionInput.technicalSpecs,
-        usageInstructions: result.functionInput.usageInstructions,
-        newDependencies: result.functionInput.newDependencies || [],
-        message: "Complete frontend application generated!",
-        tokenused: result.tokenused,
-      });
-    } else {
-      return res.status(500).json({
-        error: "Failed to generate frontend files",
-        details: result,
-      });
-    }
+    //   return res.json({
+    //     success: true,
+    //     step: "frontend_completed",
+    //     files: result.functionInput.files,
+    //     componentsSummary: result.functionInput.componentsSummary,
+    //     technicalSpecs: result.functionInput.technicalSpecs,
+    //     usageInstructions: result.functionInput.usageInstructions,
+    //     newDependencies: result.functionInput.newDependencies || [],
+    //     message: "Complete frontend application generated!",
+    //     tokenused: result.tokenused,
+    //   });
+    // } else {
+    //   return res.status(500).json({
+    //     error: "Failed to generate frontend files",
+    //     details: "",
+    //   });
+    // }
   } catch (error) {
     console.error("❌ Frontend generation error:", error);
     return res.status(500).json({
