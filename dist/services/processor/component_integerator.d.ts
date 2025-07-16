@@ -1,7 +1,7 @@
-import { GenerationResult } from "../filemodifier/component_analysis";
+import { GenerationResult } from '../filemodifier/component_analysis';
 export interface NavigationLinkAnalysis {
     link: string;
-    type: "page-route" | "in-page-section" | "external" | "unknown";
+    type: 'page-route' | 'in-page-section' | 'external' | 'unknown';
     isPageRoute: boolean;
     isInPageSection: boolean;
     normalizedPath?: string;
@@ -9,7 +9,7 @@ export interface NavigationLinkAnalysis {
 }
 export interface NavigationFileInfo {
     filePath: string;
-    type: "header" | "footer" | "navbar" | "sidebar" | "menu" | "custom";
+    type: 'header' | 'footer' | 'navbar' | 'sidebar' | 'menu' | 'custom';
     priority: number;
     existingLinks: string[];
     linkAnalysis: NavigationLinkAnalysis[];
@@ -39,14 +39,14 @@ export interface IntegrationPlan {
     purpose: string;
     required: boolean;
     priority: number;
-    integrationType: "routing" | "import" | "context" | "config" | "creation" | "navigation" | "usage";
-    navigationFileType?: "header" | "footer" | "navbar" | "sidebar" | "menu" | "custom";
+    integrationType: 'routing' | 'import' | 'context' | 'config' | 'creation' | 'navigation' | 'usage';
+    navigationFileType?: 'header' | 'footer' | 'navbar' | 'sidebar' | 'menu' | 'custom';
     modifications?: string[];
     skipReason?: string;
 }
 export interface PageFileInfo {
     filePath: string;
-    type: "page" | "layout" | "component";
+    type: 'page' | 'layout' | 'component';
     priority: number;
     isMainPage: boolean;
     componentImports: string[];
@@ -64,9 +64,9 @@ export interface IntegrationAnalysis {
     navigationAnalysis: NavigationAnalysis;
     usageAnalysis: UsageAnalysis;
     projectPatterns: {
-        exportPattern: "default" | "named" | "mixed";
-        importPattern: "default" | "named" | "mixed";
-        routingPattern: "react-router" | "next" | "reach-router" | "basic";
+        exportPattern: 'default' | 'named' | 'mixed';
+        importPattern: 'default' | 'named' | 'mixed';
+        routingPattern: 'react-router' | 'next' | 'reach-router' | 'basic';
         appFilePath?: string;
         routeFilePath?: string;
     };

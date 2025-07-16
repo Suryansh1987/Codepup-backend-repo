@@ -4,9 +4,6 @@ export declare class RedisModificationSummary {
     private redis;
     private sessionId;
     constructor(redis: RedisService, sessionId: string);
-    /**
-     * Add a new modification change to the tracking
-     */
     addChange(type: 'modified' | 'created' | 'updated', file: string, description: string, options?: {
         approach?: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION';
         success?: boolean;

@@ -18,7 +18,7 @@ export declare class EnhancedUnrestrictedIntelligentFileModifier {
     private tokenTracker;
     private tailwindChangeProcessor;
     private twoStepSystem;
-    constructor(anthropic: Anthropic, reactBasePath: string, sessionId: string, redisUrl?: string);
+    constructor(anthropic: Anthropic, reactBasePath: string, sessionId: string, redisUrl?: string, messageDB?: any);
     private verifyProcessorSetup;
     initializeSession(): Promise<void>;
     clearSession(): Promise<void>;
@@ -32,18 +32,18 @@ export declare class EnhancedUnrestrictedIntelligentFileModifier {
     setStreamCallback(callback: (message: string) => void): void;
     private streamUpdate;
     private handleTailwindChange;
-    handleComponentAddition(prompt: string, scope: any, projectSummaryCallback?: (summary: string, prompt: string) => Promise<string | null>): Promise<any>;
+    handleComponentAddition(prompt: string, scope: any, projectId?: number, projectSummaryCallback?: (summary: string, prompt: string) => Promise<string | null>): Promise<any>;
     generateComponentTwoStep(prompt: string, options?: {
         skipIntegration?: boolean;
         dryRun?: boolean;
         verbose?: boolean;
-    }): Promise<TwoStepResult>;
+    }, projectId?: number): Promise<TwoStepResult>;
     analyzeComponentOnly(prompt: string): Promise<any>;
     integrateComponentOnly(generationResult: any): Promise<any>;
     getTwoStepProjectSummary(): Promise<string>;
     private handleFullFileModification;
     private handleTargetedModification;
-    processModification(prompt: string, conversationContext?: string, dbSummary?: string, projectSummaryCallback?: (summary: string, prompt: string) => Promise<string | null>): Promise<ModificationResult>;
+    processModification(prompt: string, conversationContext?: string, dbSummary?: string, projectId?: number, projectSummaryCallback?: (summary: string, prompt: string) => Promise<string | null>): Promise<ModificationResult>;
     private handleTextBasedChange;
     private performDirectFileSearchWithLogging;
     private getChangeIcon;

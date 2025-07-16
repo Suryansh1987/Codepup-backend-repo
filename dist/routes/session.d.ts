@@ -1,6 +1,5 @@
-import express from "express";
 import { RedisService } from '../services/Redis';
-declare class StatelessSessionManager {
+export declare class StatelessSessionManager {
     private redis;
     constructor(redis: RedisService);
     generateSessionId(userContext?: string): string;
@@ -20,5 +19,3 @@ declare class StatelessSessionManager {
     }>;
     cleanup(sessionId: string): Promise<void>;
 }
-export declare function initializeSessionRoutes(redis: RedisService): express.Router;
-export { StatelessSessionManager };

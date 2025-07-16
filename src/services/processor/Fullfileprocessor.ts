@@ -6,9 +6,6 @@ import { join, basename, dirname, resolve, relative, isAbsolute } from 'path';
 import { promises as fs } from 'fs';
 import {fullFilePrompt} from '../filemodifier/template'
 
-// ============================================================================
-// ENHANCED FILE ANALYZER WITH TAILWIND CONFIG
-// ============================================================================
 
 class EnhancedFileAnalyzer {
   private anthropic: any;

@@ -10,7 +10,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.setMessageDB = setMessageDB;
-// routes/messages.ts - Updated to work with your existing structure
+// routes/messages.ts - Simplified with only essential endpoints
 const express_1 = require("express");
 const router = (0, express_1.Router)();
 // This will be set when the main app initializes the routes
@@ -19,7 +19,7 @@ let messageDB = null;
 function setMessageDB(db) {
     messageDB = db;
 }
-// Get messages for a specific project - THIS WAS MISSING
+// Get messages for a specific project
 router.get('/project/:projectId', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         if (!messageDB) {
@@ -78,10 +78,6 @@ router.post('/', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
         const messageId = yield messageDB.addMessage(content, role, Object.assign({ projectId,
             sessionId,
             userId }, metadata));
-        // Update project message count if projectId provided
-        if (projectId) {
-            yield messageDB.incrementProjectMessageCount(sessionId || `project-${projectId}`);
-        }
         res.json({
             success: true,
             data: {
@@ -100,172 +96,6 @@ router.post('/', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
         });
     }
 }));
-// Get messages for a specific user
-router.get('/user/:userId', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        if (!messageDB) {
-            res.status(500).json({
-                success: false,
-                error: 'Message service not initialized'
-            });
-            return;
-        }
-        const userId = parseInt(req.params.userId);
-        const limit = parseInt(req.query.limit) || 50;
-        if (isNaN(userId)) {
-            res.status(400).json({
-                success: false,
-                error: 'Invalid user ID provided'
-            });
-            return;
-        }
-        const result = yield messageDB.getUserMessages(userId, limit);
-        if (result.success) {
-            res.json(result);
-        }
-        else {
-            res.status(500).json(result);
-        }
-    }
-    catch (error) {
-        console.error('Get user messages error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Internal server error',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        });
-    }
-}));
 // Get messages for a specific session
-router.get('/session/:sessionId', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        if (!messageDB) {
-            res.status(500).json({
-                success: false,
-                error: 'Message service not initialized'
-            });
-            return;
-        }
-        const { sessionId } = req.params;
-        if (!sessionId) {
-            res.status(400).json({
-                success: false,
-                error: 'Session ID is required'
-            });
-            return;
-        }
-        const result = yield messageDB.getSessionMessages(sessionId);
-        if (result.success) {
-            res.json(result);
-        }
-        else {
-            res.status(500).json(result);
-        }
-    }
-    catch (error) {
-        console.error('Get session messages error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Internal server error',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        });
-    }
-}));
-// Delete messages for a project
-router.delete('/project/:projectId', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        if (!messageDB) {
-            res.status(500).json({
-                success: false,
-                error: 'Message service not initialized'
-            });
-            return;
-        }
-        const projectId = parseInt(req.params.projectId);
-        if (isNaN(projectId)) {
-            res.status(400).json({
-                success: false,
-                error: 'Invalid project ID provided'
-            });
-            return;
-        }
-        const result = yield messageDB.deleteProjectMessages(projectId);
-        if (result.success) {
-            res.json(result);
-        }
-        else {
-            res.status(500).json(result);
-        }
-    }
-    catch (error) {
-        console.error('Delete project messages error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Internal server error',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        });
-    }
-}));
-// Get conversation context for a project
-router.get('/project/:projectId/context', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        if (!messageDB) {
-            res.status(500).json({
-                success: false,
-                error: 'Message service not initialized'
-            });
-            return;
-        }
-        const projectId = parseInt(req.params.projectId);
-        if (isNaN(projectId)) {
-            res.status(400).json({
-                success: false,
-                error: 'Invalid project ID provided'
-            });
-            return;
-        }
-        const result = yield messageDB.getProjectConversationContext(projectId);
-        if (result.success) {
-            res.json(result);
-        }
-        else {
-            res.status(500).json(result);
-        }
-    }
-    catch (error) {
-        console.error('Get project context error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Internal server error',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        });
-    }
-}));
-// Health check
-router.get('/health', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        res.json({
-            success: true,
-            data: {
-                status: 'healthy',
-                timestamp: new Date().toISOString(),
-                features: [
-                    'Project message integration',
-                    'Session-based messaging',
-                    'User message tracking',
-                    'Message context retrieval'
-                ]
-            }
-        });
-    }
-    catch (error) {
-        console.error('Health check error:', error);
-        res.status(503).json({
-            success: false,
-            error: 'Health check failed',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        });
-    }
-}));
 exports.default = router;
 //# sourceMappingURL=messages.js.map
