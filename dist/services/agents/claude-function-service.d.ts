@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 export declare class ClaudeFunctionService {
     private client;
     constructor();
@@ -15,6 +16,13 @@ export declare class ClaudeFunctionService {
     generateFileStructurePlan(designChoices: any, userId: string): Promise<any>;
     updateDocumentationWithStructure(designChoices: any, structurePlan: any, userId: string): Promise<any>;
     generateBackendFiles(designChoices: any, structurePlan: any, userId: string): Promise<any>;
-    generateFrontendFiles(designChoices: any, fileStructure: any, backendFiles: any, userId: string): Promise<any>;
+    generateFrontendFiles(designChoices: any, fileStructure: any, backendFiles: any, userId: string, tailwindConfig: any, indexCss: any): Promise<Anthropic.Messages.Message>;
+    generateFrontendFilesWithProgress(designChoices: any, fileStructure: any, backendFiles: any, userId: string, onProgress?: (progress: {
+        stage: string;
+        filesGenerated: string[];
+        totalSize: number;
+        currentFile?: string;
+        percentage?: number;
+    }) => void): Promise<any>;
     private handleFunctionCall;
 }
