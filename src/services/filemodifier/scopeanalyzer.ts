@@ -1,20 +1,82 @@
-// ============================================================================
-// SIMPLIFIED SCOPE ANALYZER - CLAUDE-ONLY ANALYSIS
-// ============================================================================
-
 import Anthropic from '@anthropic-ai/sdk';
 import { ModificationScope } from './types';
+import { promises as fs } from 'fs';
+import { join, isAbsolute } from 'path';
+import { parse } from '@babel/parser';
+import traverse from '@babel/traverse';
+import * as crypto from 'crypto';
 
-// Token tracking interfaces
+// ============================================================================
+// INTERFACES
+// ============================================================================
+
+interface ProjectFile {
+  path: string;
+  relativePath?: string;
+  content: string;
+  lines: number;
+  size: number;
+  lastModified?: Date;
+}
+
+interface AnalysisNode {
+  id: string;
+  tagName: string;
+  className?: string;
+  startLine: number;
+  endLine: number;
+  displayText?: string;
+  props?: Record<string, any>;
+  isInteractive?: boolean;
+}
+
+interface ImportInfo {
+  source: string;
+  importType: 'default' | 'named' | 'namespace' | 'side-effect';
+  imports: string[];
+  line: number;
+  fullStatement: string;
+}
+
+interface FileImportInfo {
+  filePath: string;
+  imports: ImportInfo[];
+  hasLucideReact: boolean;
+  hasReact: boolean;
+  allImportSources: string[];
+}
+
+interface FileStructureInfo {
+  filePath: string;
+  nodes: AnalysisNode[];
+  imports?: FileImportInfo;
+}
+
+interface TargetNodeInfo {
+  filePath: string;
+  nodeId: string;
+  reason: string;
+}
+
+interface TreeInformation {
+  fileStructures: FileStructureInfo[];
+  compactTree: string;
+  totalFiles: number;
+  totalNodes: number;
+  totalImports: number;
+}
+
 interface TokenUsage {
   input_tokens: number;
   output_tokens: number;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
-  Usage?: number;
 }
 
-// Token Tracker class
+// ============================================================================
+// TOKEN TRACKER
+// ============================================================================
+
 class TokenTracker {
   private totalInputTokens = 0;
   private totalOutputTokens = 0;
@@ -42,7 +104,6 @@ class TokenTracker {
     this.totalCacheReadTokens += cacheRead;
     this.apiCalls++;
 
-    // Log operation
     this.operationHistory.push({
       operation,
       inputTokens,
@@ -73,54 +134,13 @@ class TokenTracker {
   getDetailedReport(): string {
     const stats = this.getStats();
     const report = [
-      `📊 SCOPE ANALYZER TOKEN USAGE REPORT`,
-      `═══════════════════════════════════════`,
+      `📊 SIMPLIFIED SCOPE ANALYZER TOKEN REPORT`,
+      `═════════════════════════════════════════`,
       `🔢 Total API Calls: ${stats.apiCalls}`,
       `📥 Total Input Tokens: ${stats.inputTokens.toLocaleString()}`,
       `📤 Total Output Tokens: ${stats.outputTokens.toLocaleString()}`,
-      `🎯 Total Tokens Used: ${stats.totalTokens.toLocaleString()}`,
-      ``
+      `🎯 Total Tokens Used: ${stats.totalTokens.toLocaleString()}`
     ];
-
-    if (stats.cacheCreationTokens > 0 || stats.cacheReadTokens > 0) {
-      report.push(
-        `💾 CACHE EFFICIENCY:`,
-        `   Cache Creation: ${stats.cacheCreationTokens.toLocaleString()} tokens`,
-        `   Cache Reads: ${stats.cacheReadTokens.toLocaleString()} tokens`,
-        `   Effective Input: ${stats.effectiveInputTokens.toLocaleString()} tokens`,
-        `   Cache Savings: ${((stats.cacheReadTokens / stats.totalTokens) * 100).toFixed(1)}%`,
-        ``
-      );
-    }
-
-    report.push(
-      `📈 AVERAGES:`,
-      `   Input per call: ${stats.averageInputPerCall} tokens`,
-      `   Output per call: ${stats.averageOutputPerCall} tokens`,
-      ``
-    );
-
-    if (stats.operationHistory.length > 0) {
-      report.push(`🔍 OPERATION BREAKDOWN:`);
-      const operationSummary = new Map<string, { calls: number; totalInput: number; totalOutput: number }>();
-      
-      stats.operationHistory.forEach(op => {
-        if (!operationSummary.has(op.operation)) {
-          operationSummary.set(op.operation, { calls: 0, totalInput: 0, totalOutput: 0 });
-        }
-        const summary = operationSummary.get(op.operation)!;
-        summary.calls++;
-        summary.totalInput += op.inputTokens;
-        summary.totalOutput += op.outputTokens;
-      });
-
-      operationSummary.forEach((summary, operation) => {
-        const avgInput = Math.round(summary.totalInput / summary.calls);
-        const avgOutput = Math.round(summary.totalOutput / summary.calls);
-        report.push(`   ${operation}: ${summary.calls} calls, avg ${avgInput}/${avgOutput} tokens`);
-      });
-    }
-
     return report.join('\n');
   }
 
@@ -134,18 +154,411 @@ class TokenTracker {
   }
 }
 
+// ============================================================================
+// DYNAMIC AST ANALYZER (moved from TargetedNodes)
+// ============================================================================
+
+class DynamicASTAnalyzer {
+  private streamCallback?: (message: string) => void;
+  private nodeCache = new Map<string, any[]>();
+  private importCache = new Map<string, FileImportInfo>();
+  private reactBasePath: string;
+
+  constructor(reactBasePath: string) {
+    this.reactBasePath = reactBasePath.replace(/builddora/g, 'buildora');
+  }
+
+  setStreamCallback(callback: (message: string) => void): void {
+    this.streamCallback = callback;
+  }
+
+  private streamUpdate(message: string): void {
+    if (this.streamCallback) {
+      this.streamCallback(message);
+    }
+  }
+
+  private extractImports(filePath: string, content: string): FileImportInfo {
+    const cacheKey = `${filePath}_${content.length}`;
+    
+    if (this.importCache.has(cacheKey)) {
+      return this.importCache.get(cacheKey)!;
+    }
+
+    const imports: ImportInfo[] = [];
+    let hasLucideReact = false;
+    let hasReact = false;
+    const allImportSources: string[] = [];
+
+    try {
+      const ast = parse(content, {
+        sourceType: 'module',
+        plugins: ['jsx', 'typescript'],
+        ranges: true
+      });
+
+      traverse(ast, {
+        ImportDeclaration: (path: any) => {
+          const node = path.node;
+          const source = node.source.value;
+          const line = node.loc?.start.line || 1;
+          const fullStatement = content.split('\n')[line - 1]?.trim() || '';
+
+          allImportSources.push(source);
+          
+          if (source === 'lucide-react') {
+            hasLucideReact = true;
+          }
+          if (source === 'react') {
+            hasReact = true;
+          }
+
+          let importType: 'default' | 'named' | 'namespace' | 'side-effect' = 'side-effect';
+          const importNames: string[] = [];
+
+          if (node.specifiers && node.specifiers.length > 0) {
+            for (const specifier of node.specifiers) {
+              if (specifier.type === 'ImportDefaultSpecifier') {
+                importType = 'default';
+                importNames.push(specifier.local.name);
+              } else if (specifier.type === 'ImportNamespaceSpecifier') {
+                importType = 'namespace';
+                importNames.push(specifier.local.name);
+              } else if (specifier.type === 'ImportSpecifier') {
+                importType = 'named';
+                const importedName = specifier.imported.name;
+                const localName = specifier.local.name;
+                importNames.push(importedName === localName ? importedName : `${importedName} as ${localName}`);
+              }
+            }
+          }
+
+          imports.push({
+            source,
+            importType,
+            imports: importNames,
+            line,
+            fullStatement
+          });
+        }
+      });
+
+    } catch (error) {
+      this.streamUpdate(`⚠️ Import extraction failed for ${filePath}: ${error}`);
+    }
+
+    const fileImportInfo: FileImportInfo = {
+      filePath,
+      imports,
+      hasLucideReact,
+      hasReact,
+      allImportSources
+    };
+
+    this.importCache.set(cacheKey, fileImportInfo);
+    return fileImportInfo;
+  }
+
+  private createStableNodeId(node: any, content: string, index: number): string {
+    const tagName = node.openingElement?.name?.name || 'unknown';
+    const startLine = node.loc?.start.line || 1;
+    const startColumn = node.loc?.start.column || 0;
+    
+    let context = '';
+    if (node.start !== undefined && node.end !== undefined) {
+      const start = Math.max(0, node.start - 10);
+      const end = Math.min(content.length, node.end + 10);
+      context = content.substring(start, end);
+    }
+    
+    const hashInput = `${tagName}_${startLine}_${startColumn}_${index}_${context.replace(/\s+/g, ' ').trim()}`;
+    const hash = crypto.createHash('sha256').update(hashInput).digest('hex');
+    return hash.substring(0, 12);
+  }
+
+  private extractElementData(node: any, content: string): {
+    displayText?: string;
+    props: Record<string, any>;
+    isInteractive: boolean;
+  } {
+    const props: Record<string, any> = {};
+    let isInteractive = false;
+
+    // Extract all props
+    if (node.openingElement?.attributes) {
+      for (const attr of node.openingElement.attributes) {
+        if (attr.type === 'JSXAttribute' && attr.name?.name) {
+          const propName = attr.name.name;
+          
+          if (attr.value?.type === 'StringLiteral') {
+            props[propName] = attr.value.value;
+          } else if (attr.value?.type === 'JSXExpressionContainer') {
+            if (attr.value.expression?.type === 'Identifier') {
+              props[propName] = `{${attr.value.expression.name}}`;
+            } else {
+              props[propName] = '{...}';
+            }
+          } else if (!attr.value) {
+            props[propName] = true;
+          }
+
+          // Detect interactivity
+          if (propName.startsWith('on') || propName === 'href' || propName === 'to') {
+            isInteractive = true;
+          }
+        }
+      }
+    }
+
+    // Extract text content - maximum 5 words
+    let displayText: string | undefined;
+    if (node.children) {
+      const extractText = (child: any, depth: number = 0): string => {
+        if (!child || depth > 3) return '';
+        
+        if (child.type === 'JSXText') {
+          return child.value.trim();
+        } else if (child.type === 'JSXExpressionContainer') {
+          if (child.expression?.type === 'StringLiteral') {
+            return child.expression.value;
+          } else if (child.expression?.type === 'Identifier') {
+            return `{${child.expression.name}}`;
+          } else if (child.expression?.type === 'TemplateLiteral') {
+            const quasis = child.expression.quasis || [];
+            return quasis.map((q: any) => q.value?.cooked || '').join(' ');
+          }
+        } else if (child.type === 'JSXElement' && child.children) {
+          return child.children
+            .map((grandChild: any) => extractText(grandChild, depth + 1))
+            .filter((text: string) => text.trim().length > 0)
+            .join(' ');
+        }
+        return '';
+      };
+
+      const allText = node.children
+        .map((child: any) => extractText(child))
+        .filter((text: string) => text.trim().length > 0)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (allText) {
+        const words = allText.split(/\s+/);
+        const maxWords = Math.min(words.length, 5);
+        const selectedWords = words.slice(0, maxWords);
+        
+        displayText = selectedWords.join(' ');
+        if (words.length > 5) {
+          displayText += '...';
+        }
+      }
+    }
+
+    return { displayText, props, isInteractive };
+  }
+
+  private parseAndCacheNodes(filePath: string, content: string): any[] {
+    const cacheKey = `${filePath}_${content.length}`;
+    
+    if (this.nodeCache.has(cacheKey)) {
+      return this.nodeCache.get(cacheKey)!;
+    }
+
+    try {
+      const ast = parse(content, {
+        sourceType: 'module',
+        plugins: ['jsx', 'typescript'],
+        ranges: true
+      });
+
+      const nodes: any[] = [];
+      let nodeIndex = 0;
+
+      traverse(ast, {
+        JSXElement: {
+          enter: (path: any) => {
+            const node = path.node;
+            nodeIndex++;
+
+            let tagName = 'unknown';
+            if (node.openingElement?.name?.type === 'JSXIdentifier') {
+              tagName = node.openingElement.name.name;
+            } else if (node.openingElement?.name?.type === 'JSXMemberExpression') {
+              tagName = `${node.openingElement.name.object.name}.${node.openingElement.name.property.name}`;
+            }
+
+            const stableId = this.createStableNodeId(node, content, nodeIndex);
+
+            const enhancedNode = {
+              ...node,
+              _id: stableId,
+              _tagName: tagName,
+              _index: nodeIndex,
+              _filePath: filePath
+            };
+
+            nodes.push(enhancedNode);
+          }
+        }
+      });
+
+      this.nodeCache.set(cacheKey, nodes);
+      return nodes;
+
+    } catch (error) {
+      this.streamUpdate(`❌ Parsing failed: ${error}`);
+      return [];
+    }
+  }
+
+  // Extract minimal nodes for analysis
+  extractMinimalNodes(filePath: string, projectFiles: Map<string, ProjectFile>): AnalysisNode[] {
+    if (!filePath.match(/\.(tsx?|jsx?)$/i)) {
+      return [];
+    }
+
+    const file = projectFiles.get(filePath);
+    if (!file) {
+      return [];
+    }
+
+    const nodes = this.parseAndCacheNodes(filePath, file.content);
+    const minimalNodes: AnalysisNode[] = [];
+
+    for (const node of nodes) {
+      const { displayText, props, isInteractive } = this.extractElementData(node, file.content);
+
+      const minimalNode: AnalysisNode = {
+        id: node._id,
+        tagName: node._tagName,
+        className: props.className,
+        startLine: node.loc?.start.line || 1,
+        endLine: node.loc?.end.line || 1,
+        displayText,
+        props,
+        isInteractive
+      };
+
+      minimalNodes.push(minimalNode);
+    }
+
+    return minimalNodes;
+  }
+
+  // Extract imports for a file
+  extractFileImports(filePath: string, projectFiles: Map<string, ProjectFile>): FileImportInfo | null {
+    if (!filePath.match(/\.(tsx?|jsx?)$/i)) {
+      return null;
+    }
+
+    const file = projectFiles.get(filePath);
+    if (!file) {
+      return null;
+    }
+
+    return this.extractImports(filePath, file.content);
+  }
+
+  // Generate compact tree with import info and text content
+  generateCompactTreeWithImports(files: FileStructureInfo[]): string {
+    return files.map(file => {
+      const nodeList = file.nodes.map(node => {
+        const className = node.className ? `.${node.className.split(' ')[0]}` : '';
+        
+        let textDisplay = '';
+        if (node.displayText && node.displayText.trim()) {
+          textDisplay = ` "${node.displayText}"`;
+        }
+        
+        const hasHandlers = Object.keys(node.props || {}).some(key => key.startsWith('on')) ? '{interactive}' : '';
+        const lines = `(L${node.startLine}${node.endLine !== node.startLine ? `-${node.endLine}` : ''})`;
+        
+        return `${node.id}:${node.tagName}${className}${textDisplay}${hasHandlers}${lines}`;
+      }).join('\n    ');
+
+      // Add import information
+      let importInfo = '';
+      if (file.imports) {
+        const importLines = file.imports.imports.map(imp => 
+          `${imp.source}: [${imp.imports.join(', ')}]`
+        ).join(', ');
+        
+        const lucideStatus = file.imports.hasLucideReact ? '✅ Lucide' : '❌ No Lucide';
+        const reactStatus = file.imports.hasReact ? '✅ React' : '❌ No React';
+        
+        importInfo = `\n  📦 IMPORTS: ${importLines}\n  🔍 STATUS: ${lucideStatus}, ${reactStatus}`;
+      }
+      
+      return `📁 ${file.filePath}:${importInfo}\n    ${nodeList}`;
+    }).join('\n\n');
+  }
+
+  private normalizeFilePath(filePath: string): string {
+    return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+  }
+
+  private shouldAnalyzeFile(filePath: string): boolean {
+    return filePath.match(/\.(tsx?|jsx?)$/i) !== null;
+  }
+
+  // Build minimal AST tree with imports for the entire project
+  buildMinimalTreeWithImports(projectFiles: Map<string, ProjectFile>): FileStructureInfo[] {
+    const fileStructures: FileStructureInfo[] = [];
+    
+    for (const [filePath, projectFile] of projectFiles) {
+      if (!this.shouldAnalyzeFile(filePath)) {
+        continue;
+      }
+
+      const nodes = this.extractMinimalNodes(filePath, projectFiles);
+      const imports = this.extractFileImports(filePath, projectFiles);
+      
+      if (nodes.length === 0) {
+        continue;
+      }
+
+      const normalizedPath = projectFile.relativePath || this.normalizeFilePath(filePath);
+
+      fileStructures.push({
+        filePath: normalizedPath,
+        nodes,
+        imports: imports || undefined
+      });
+
+      const importCount = imports?.imports.length || 0;
+      const lucideStatus = imports?.hasLucideReact ? '✅' : '❌';
+      this.streamUpdate(`📄 ${normalizedPath}: ${nodes.length} nodes, ${importCount} imports ${lucideStatus}`);
+    }
+
+    return fileStructures;
+  }
+
+  clearCache(): void {
+    this.nodeCache.clear();
+    this.importCache.clear();
+  }
+}
+
+// ============================================================================
+// SIMPLIFIED SCOPE ANALYZER
+// ============================================================================
+
 export class ScopeAnalyzer {
   private anthropic: Anthropic;
   private streamCallback?: (message: string) => void;
   private tokenTracker: TokenTracker;
+  private astAnalyzer: DynamicASTAnalyzer;
 
-  constructor(anthropic: Anthropic) {
+  constructor(anthropic: Anthropic, reactBasePath: string = '') {
     this.anthropic = anthropic;
     this.tokenTracker = new TokenTracker();
+    this.astAnalyzer = new DynamicASTAnalyzer(reactBasePath || process.cwd());
   }
 
   setStreamCallback(callback: (message: string) => void) {
     this.streamCallback = callback;
+    this.astAnalyzer.setStreamCallback(callback);
   }
 
   private streamUpdate(message: string) {
@@ -170,194 +583,265 @@ export class ScopeAnalyzer {
   }
 
   /**
-   * Main scope analysis - Claude-only approach
+   * SIMPLIFIED: Main scope analysis with single AI call
    */
   async analyzeScope(
     prompt: string, 
     projectSummary?: string, 
     conversationContext?: string,
-    dbSummary?: string
+    dbSummary?: string,
+    projectFiles?: Map<string, ProjectFile>
   ): Promise<ModificationScope> {
-    this.streamUpdate('🤖 Starting Claude-only scope analysis...');
+    this.streamUpdate('🤖 Starting simplified scope analysis...');
 
-    // Single AI call to determine modification method
-    const method = await this.determineModificationMethod(prompt, conversationContext);
+    // Build tree if we have project files (for potential TARGETED_NODES)
+    let treeInformation: TreeInformation | undefined;
+    
+    if (projectFiles && projectFiles.size > 0) {
+      this.streamUpdate('🌳 Building project tree...');
+      this.astAnalyzer.clearCache();
+      const fileStructures = this.astAnalyzer.buildMinimalTreeWithImports(projectFiles);
+      
+      if (fileStructures.length > 0) {
+        const totalNodes = fileStructures.reduce((sum, f) => sum + f.nodes.length, 0);
+        const totalImports = fileStructures.reduce((sum, f) => sum + (f.imports?.imports.length || 0), 0);
+        const compactTree = this.astAnalyzer.generateCompactTreeWithImports(fileStructures);
+        
+        treeInformation = {
+          fileStructures,
+          compactTree,
+          totalFiles: fileStructures.length,
+          totalNodes,
+          totalImports
+        };
+        
+        this.streamUpdate(`✅ Built tree: ${fileStructures.length} files, ${totalNodes} nodes, ${totalImports} imports`);
+      }
+    }
 
-    const finalScope: ModificationScope = {
-      scope: method.scope,
-      files: [], // No files selected here - will be determined by AST analysis later
-      reasoning: method.reasoning,
-      ...(method.scope === "COMPONENT_ADDITION" && {
-        componentName: method.componentName || this.extractComponentName(prompt),
-        componentType: method.componentType || this.determineComponentType(prompt),
-        dependencies: [] // Dependencies will be determined later
-      }),
-      ...(method.scope === "TAILWIND_CHANGE" && {
-        colorChanges: method.colorChanges || this.extractColorChanges(prompt)
-      }),
-      ...(method.scope === "TEXT_BASED_CHANGE" && method.textChangeAnalysis && {
-        textChangeAnalysis: method.textChangeAnalysis
-      })
-    };
+    // SINGLE AI CALL for scope determination and analysis
+    const result = await this.performSingleScopeAnalysis(prompt, conversationContext, treeInformation);
 
-    this.streamUpdate(`✅ Final scope determination: ${finalScope.scope}`);
+    this.streamUpdate(`✅ Scope determined: ${result.scope}`);
     
     // Log token summary
     const tokenStats = this.tokenTracker.getStats();
     this.streamUpdate(`💰 Scope Analysis Tokens: ${tokenStats.totalTokens} total (${tokenStats.apiCalls} API calls)`);
 
-    return finalScope;
+    return result;
   }
 
   /**
-   * Single Claude call to determine modification method
+   * SINGLE AI CALL for all scope analysis
    */
-  private async determineModificationMethod(
+  private async performSingleScopeAnalysis(
     prompt: string,
-    conversationContext?: string
-  ): Promise<{ 
-    scope: "FULL_FILE" | "TARGETED_NODES" | "COMPONENT_ADDITION" | "TAILWIND_CHANGE" | "TEXT_BASED_CHANGE", 
-    reasoning: string,
-    componentName?: string,
-    componentType?: 'component' | 'page' | 'app',
-    colorChanges?: Array<{type: string; color: string; target?: string}>,
-    textChangeAnalysis?: { searchTerm: string, replacementTerm: string, searchVariations: string[] }
-  }> {
+    conversationContext?: string,
+    treeInformation?: TreeInformation
+  ): Promise<ModificationScope> {
     
-    const methodPrompt = `
+    const hasTree = treeInformation && treeInformation.totalNodes > 0;
+    const treeSection = hasTree ? `
+PROJECT TREE WITH IMPORT AND TEXT CONTENT:
+${treeInformation!.compactTree}
+
+TREE STATISTICS:
+- Total Files: ${treeInformation!.totalFiles}
+- Total Nodes: ${treeInformation!.totalNodes} 
+- Total Imports: ${treeInformation!.totalImports}
+
+FORMAT EXPLANATION: 
+- nodeId:tagName.className "text content" {interactive} (LineNumbers)
+- 📦 IMPORTS: Lists all imports from each file
+- 🔍 STATUS: Shows if Lucide React and React are imported
+` : 'PROJECT TREE: Not available - will use other scope methods';
+
+    const analysisPrompt = `
 **USER REQUEST:** "${prompt}"
 
 ${conversationContext ? `**CONVERSATION CONTEXT:**\n${conversationContext}\n` : ''}
 
-**TASK:** Analyze the request and determine the MOST SPECIFIC modification method.
+${treeSection}
 
-**METHOD OPTIONS (in order of preference - choose the most specific that applies):**
+**COMPREHENSIVE SCOPE ANALYSIS TASK:**
+
+You are an expert React/TypeScript modification analyzer. Your job is to determine the MOST APPROPRIATE modification scope and provide the necessary analysis data.
+
+**DETAILED SCOPE OPTIONS:**
 
 1. **TEXT_BASED_CHANGE** – For pure content replacement:
-✅ CHOOSE THIS IF the request involves:
-- Only changing text content (no styling, positioning, or visual changes)
-- Simple word/phrase replacements
-- Content updates without any visual modifications
-- Examples: "change 'Welcome' to 'Hello'", "replace 'Contact Us' with 'Get in Touch'"
+   ✅ CHOOSE THIS IF the request involves:
+   - Only changing text content (no styling, positioning, or visual changes)
+   - Simple word/phrase replacements without context targeting
+   - Content updates that don't require specific element identification
+   - Examples: "change 'Welcome' to 'Hello'", "replace 'Contact Us' with 'Get in Touch'"
+   - Pattern: Direct text → text replacement with no element specificity
 
-2. **TAILWIND_CHANGE** – For global color/theme changes:
-✅ CHOOSE THIS IF the request involves:
-- Global color changes without specifying exact elements
-- Theme color modifications (primary, secondary, accent colors)
-- Background color changes for the entire site
-- Examples: "change background color to blue", "make the primary color red"
+2. **TARGETED_NODES** – For specific element modifications:
+   ✅ CHOOSE THIS IF the request involves:
+   - Specific existing elements with targeted modifications
+   - Location-based targeting (header, footer, hero section, navigation)
+   - Element-specific changes that require precise identification
+   - Visual modifications to particular components
+   - Examples: "change the hero section tagline", "update the navigation button", "modify the footer text"
+   - Pattern: Requires finding specific elements in the UI tree
+   - **REQUIRES: Project tree must be available with nodes**
 
-3. **TARGETED_NODES** – For specific element modifications:
-✅ CHOOSE THIS IF the request targets:
-- Specific existing elements with any kind of modification
-- Descriptive targeting of particular UI components
-- Changes that specify WHERE the modification should happen
-- Examples: "change this button's color", "make that title larger", "update the footer"
+3. **COMPONENT_ADDITION** – For creating new UI elements:
+   ✅ CHOOSE THIS IF the request involves:
+   - Adding new components, pages, or UI elements
+   - Creating something that doesn't exist yet
+   - Examples: "add a button", "create a card", "make a new page", "build a contact form"
+   - Pattern: Creation of new functionality
 
-4. **COMPONENT_ADDITION** – For creating new UI elements:
-✅ CHOOSE THIS IF the request involves:
-- Adding new components, pages, or UI elements
-- Creating something that doesn't exist yet
-- Examples: "add a button", "create a card", "make a new page"
+4. **TAILWIND_CHANGE** – For global styling modifications:
+   ✅ CHOOSE THIS IF the request involves:
+   - Global color changes without specifying exact elements
+   - Theme color modifications (primary, secondary, accent colors)
+   - Site-wide styling changes
+   - Examples: "change the primary color to blue", "make the background red", "update the theme colors"
+   - Pattern: Global visual changes affecting multiple elements
 
-5. **FULL_FILE** – For comprehensive changes (LAST RESORT):
-✅ CHOOSE THIS ONLY IF the request requires:
-- Multiple related changes across files
-- Complete restructuring or redesign
-- Examples: "redesign the entire page", "add dark mode"
+5. **FULL_FILE** – For complex multi-element changes:
+   ✅ CHOOSE THIS IF the request involves:
+   - Multiple related changes across files
+   - Complete restructuring or redesign
+   - Complex functionality additions affecting multiple components
+   - Examples: "redesign the entire page", "add dark mode", "restructure the layout"
+   - Pattern: Comprehensive changes requiring multiple file modifications
 
-**DECISION PRIORITY:**
-1. If it's a simple TEXT replacement → TEXT_BASED_CHANGE
-2. If it's about GLOBAL COLORS without specific targets → TAILWIND_CHANGE
-3. If it's about ONE specific thing → TARGETED_NODES
-4. If it's creating something NEW → COMPONENT_ADDITION  
-5. If it needs MULTIPLE changes → FULL_FILE
+**ANALYSIS METHODOLOGY:**
 
-**RESPOND WITH JSON:**
+1. **Request Classification:**
+   - Analyze the user's intent and specificity
+   - Determine if the change is simple text, targeted element, new creation, global styling, or complex
 
-For TEXT_BASED_CHANGE:
+2. **Context Evaluation:**
+   - Consider conversation history for additional context
+   - Look for location indicators (hero, footer, navigation, etc.)
+   - Assess complexity and scope of changes needed
+
+3. **Tree Analysis (if available):**
+   - For TARGETED_NODES: Identify specific nodes that match the request
+   - Use semantic matching based on location, text content, and element structure
+   - Consider tag names, class names, text content, and element hierarchy
+   - Match user's described location with actual tree structure
+
+4. **Data Extraction:**
+   - For TEXT_BASED_CHANGE: Extract exact search and replacement terms
+   - For TARGETED_NODES: Identify specific node IDs and reasons
+   - For others: Provide reasoning for scope selection
+
+**RESPONSE FORMATS:**
+
+**For TEXT_BASED_CHANGE:**
 \`\`\`json
 {
   "scope": "TEXT_BASED_CHANGE",
-  "reasoning": "This is a simple text replacement request.",
-  "textChangeAnalysis": {
-    "searchTerm": "exact text to search for",
-    "replacementTerm": "exact text to replace with",
-    "searchVariations": ["variation1", "variation2", "UPPERCASE", "lowercase"]
-  }
+  "reasoning": "This is a simple text replacement request without specific element targeting. The user wants to replace text content directly without requiring element identification.",
+  "searchTerm": "exact text to find",
+  "replacementTerm": "exact replacement text"
 }
 \`\`\`
 
-For TAILWIND_CHANGE:
+**For TARGETED_NODES (only if tree available and nodes identified):**
 \`\`\`json
 {
-  "scope": "TAILWIND_CHANGE",
-  "reasoning": "This request involves global color changes.",
-  "colorChanges": [
-    {"type": "background", "color": "blue"},
-    {"type": "primary", "color": "red"}
+  "scope": "TARGETED_NODES", 
+  "reasoning": "This request targets specific elements that can be identified in the project tree. The modification requires precise element selection based on location and context.",
+  "targetNodes": [
+    {
+      "filePath": "src/pages/Home.tsx",
+      "nodeId": "nodeId123", 
+      "reason": "This node represents the target element because: [detailed explanation of why this node matches the user's request, including location context, text content, and semantic meaning]"
+    }
   ]
 }
 \`\`\`
 
-For COMPONENT_ADDITION:
+**For COMPONENT_ADDITION:**
 \`\`\`json
 {
   "scope": "COMPONENT_ADDITION",
-  "reasoning": "This request involves creating a new UI element.",
-  "componentName": "ExtractedComponentName",
-  "componentType": "component"
+  "reasoning": "This request involves creating new UI elements that don't currently exist. The user wants to add new functionality or components to the application."
 }
 \`\`\`
 
-For TARGETED_NODES or FULL_FILE:
+**For TAILWIND_CHANGE:**
 \`\`\`json
 {
-  "scope": "TARGETED_NODES",
-  "reasoning": "This request targets specific existing elements."
+  "scope": "TAILWIND_CHANGE",
+  "reasoning": "This request involves global styling changes that affect the overall theme or color scheme. The changes should be applied site-wide through configuration modifications."
 }
 \`\`\`
-    `.trim();
+
+**For FULL_FILE:**
+\`\`\`json
+{
+  "scope": "FULL_FILE",
+  "reasoning": "This request requires comprehensive changes affecting multiple files or complex restructuring that cannot be handled by more specific approaches."
+}
+\`\`\`
+
+**CRITICAL INSTRUCTIONS:**
+
+1. **Path Accuracy:** Use EXACT file paths from the tree (no leading slashes: "src/pages/Home.tsx" not "/src/pages/Home.tsx")
+
+2. **Node ID Precision:** Use EXACT node IDs from the tree structure provided above
+
+3. **Semantic Matching:** For TARGETED_NODES, match user descriptions with actual tree elements using:
+   - Location context (hero section → look for main/header elements in Home.tsx)
+   - Text content matching (tagline → look for text content in nodes)
+   - Element hierarchy and positioning
+   - Semantic meaning of tags and classes
+
+4. **Scope Priority:** Choose the MOST SPECIFIC scope that applies:
+   - TEXT_BASED_CHANGE for simple text replacement
+   - TARGETED_NODES for element-specific changes (requires tree)
+   - COMPONENT_ADDITION for new element creation
+   - TAILWIND_CHANGE for global styling
+   - FULL_FILE only as last resort
+
+5. **Reasoning Quality:** Provide detailed, logical reasoning that explains:
+   - Why this scope was chosen over alternatives
+   - How the request maps to the chosen approach
+   - What specific analysis led to this decision
+
+**PERFORM COMPREHENSIVE ANALYSIS AND RESPOND:**`;
 
     try {
-      this.streamUpdate('🤖 Sending scope determination request to Claude...');
+      this.streamUpdate('🤖 Sending comprehensive scope analysis request...');
       
       const response = await this.anthropic.messages.create({
         model: 'claude-3-5-sonnet-20240620',
-        max_tokens: 600,
-        temperature: 0,
-        messages: [{ role: 'user', content: methodPrompt }],
+        max_tokens: 2000,
+        temperature: 0.1,
+        messages: [{ role: 'user', content: analysisPrompt }],
       });
 
-      // Track token usage
-      this.tokenTracker.logUsage(response.usage, 'Scope Determination');
+      this.tokenTracker.logUsage(response.usage, 'Comprehensive Scope Analysis');
 
-      const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-      return this.parseMethodResponse(text);
+      const responseText = response.content[0]?.type === 'text' ? response.content[0].text : '';
+      return this.parseSimplifiedResponse(responseText, treeInformation);
+      
     } catch (error) {
-      this.streamUpdate(`❌ Scope determination failed: ${error}`);
-      // Fallback to FULL_FILE
-      return { 
-        scope: "FULL_FILE", 
-        reasoning: `API error - using fallback: ${error}` 
+      this.streamUpdate(`❌ Scope analysis failed: ${error}`);
+      
+      // Fallback
+      return {
+        scope: "FULL_FILE",
+        files: [],
+        reasoning: `Analysis failed: ${error}`
       };
     }
   }
 
   /**
-   * Parse Claude's response for method determination
+   * Parse the simplified AI response
    */
-  private parseMethodResponse(text: string): { 
-    scope: "FULL_FILE" | "TARGETED_NODES" | "COMPONENT_ADDITION" | "TAILWIND_CHANGE" | "TEXT_BASED_CHANGE", 
-    reasoning: string,
-    componentName?: string,
-    componentType?: 'component' | 'page' | 'app',
-    colorChanges?: Array<{type: string; color: string; target?: string}>,
-    textChangeAnalysis?: { searchTerm: string, replacementTerm: string, searchVariations: string[] }
-  } {
+  private parseSimplifiedResponse(responseText: string, treeInformation?: TreeInformation): ModificationScope {
     try {
-      // Extract JSON from the response
-      const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+      const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/);
       if (!jsonMatch) {
         throw new Error('No JSON found in response');
       }
@@ -370,146 +854,47 @@ For TARGETED_NODES or FULL_FILE:
         throw new Error(`Invalid scope: ${parsed.scope}`);
       }
 
-      const result: any = {
+      const baseScope: ModificationScope = {
         scope: parsed.scope,
+        files: [],
         reasoning: parsed.reasoning || "No reasoning provided"
       };
 
-      // Add scope-specific data
-      if (parsed.scope === "TEXT_BASED_CHANGE" && parsed.textChangeAnalysis) {
-        result.textChangeAnalysis = parsed.textChangeAnalysis;
+      // Handle TEXT_BASED_CHANGE
+      if (parsed.scope === "TEXT_BASED_CHANGE" && parsed.searchTerm && parsed.replacementTerm) {
+        baseScope.textChangeAnalysis = {
+          searchTerm: parsed.searchTerm,
+          replacementTerm: parsed.replacementTerm,
+          searchVariations: []
+        };
+        return baseScope;
       }
 
-      if (parsed.scope === "TAILWIND_CHANGE" && parsed.colorChanges) {
-        result.colorChanges = parsed.colorChanges;
+      // Handle TARGETED_NODES  
+      if (parsed.scope === "TARGETED_NODES" && parsed.targetNodes && treeInformation) {
+        // Normalize paths (remove leading slashes)
+        const normalizedTargetNodes = parsed.targetNodes.map((node: any) => ({
+          ...node,
+          filePath: node.filePath.replace(/^\/+/, '')
+        }));
+
+        baseScope.treeInformation = treeInformation;
+        baseScope.targetNodes = normalizedTargetNodes;
+        return baseScope;
       }
 
-      if (parsed.scope === "COMPONENT_ADDITION") {
-        result.componentName = parsed.componentName;
-        result.componentType = parsed.componentType;
-      }
+      // Handle all other scopes (simple response)
+      return baseScope;
 
-      return result;
     } catch (error) {
-      this.streamUpdate(`❌ Failed to parse method response: ${error}`);
+      this.streamUpdate(`❌ Failed to parse response: ${error}`);
       
-      // Fallback to FULL_FILE
-      return { 
-        scope: "FULL_FILE", 
-        reasoning: `Parse error - using fallback: ${error}` 
+      // Fallback
+      return {
+        scope: "FULL_FILE",
+        files: [],
+        reasoning: `Parse error: ${error}`
       };
     }
-  }
-
-  /**
-   * Extract color changes from prompt (fallback method)
-   */
-  private extractColorChanges(prompt: string): Array<{type: string; color: string; target?: string}> {
-    const changes: Array<{type: string; color: string; target?: string}> = [];
-    const promptLower = prompt.toLowerCase();
-
-    // Color extraction patterns
-    const colorPatterns = [
-      /(?:change|make|set)\s+(?:the\s+)?(?:background|bg)\s+(?:color\s+)?(?:to\s+)?([a-zA-Z]+|#[0-9a-fA-F]{3,6})/g,
-      /(?:change|make|set)\s+(?:the\s+)?(?:primary|secondary|accent)\s+color\s+(?:to\s+)?([a-zA-Z]+|#[0-9a-fA-F]{3,6})/g,
-      /make\s+it\s+([a-zA-Z]+)/g,
-    ];
-
-    colorPatterns.forEach(pattern => {
-      let match;
-      while ((match = pattern.exec(promptLower)) !== null) {
-        const color = match[1];
-        let type = 'general';
-        
-        if (match[0].includes('background') || match[0].includes('bg')) {
-          type = 'background';
-        } else if (match[0].includes('primary')) {
-          type = 'primary';
-        } else if (match[0].includes('secondary')) {
-          type = 'secondary';
-        } else if (match[0].includes('accent')) {
-          type = 'accent';
-        }
-        
-        changes.push({ type, color });
-      }
-    });
-
-    // If no specific changes found, extract general color
-    if (changes.length === 0) {
-      const generalColorMatch = promptLower.match(/\b(red|blue|green|yellow|purple|orange|pink|black|white|gray|grey)\b/);
-      if (generalColorMatch) {
-        changes.push({ type: 'general', color: generalColorMatch[1] });
-      }
-    }
-
-    return changes;
-  }
-
-  /**
-   * Extract component name from prompt (fallback method)
-   */
-  private extractComponentName(prompt: string): string {
-    const patterns = [
-      /(?:add|create|build|make|new)\s+(?:a\s+)?([A-Z][a-zA-Z]+)/i,
-      /([A-Z][a-zA-Z]+)\s+(?:component|page)/i,
-      /(?:component|page)\s+(?:called|named)\s+([A-Z][a-zA-Z]+)/i
-    ];
-
-    for (const pattern of patterns) {
-      const match = prompt.match(pattern);
-      if (match && match[1]) {
-        const name = match[1].trim();
-        return name.charAt(0).toUpperCase() + name.slice(1);
-      }
-    }
-
-    return 'NewComponent'; // Default name
-  }
-
-  /**
-   * Determine component type (fallback method)
-   */
-  private determineComponentType(prompt: string): 'component' | 'page' | 'app' {
-    const promptLower = prompt.toLowerCase();
-    
-    if (promptLower.includes('page') || promptLower.includes('route') || promptLower.includes('screen')) {
-      return 'page';
-    }
-    
-    if (promptLower.includes('app') || promptLower.includes('main') || promptLower.includes('application')) {
-      return 'app';
-    }
-    
-    return 'component';
-  }
-
-  /**
-   * Generate reasoning text for the scope decision
-   */
-  generateReasoningText(
-    prompt: string,
-    scope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE',
-    files: string[],
-    componentInfo?: { name?: string; type?: string },
-    colorChanges?: Array<{type: string; color: string; target?: string}>,
-    textChangeAnalysis?: { searchTerm: string; replacementTerm: string; searchVariations: string[] }
-  ): string {
-    const baseReasoning = `Claude-determined scope: ${scope} approach selected for request: "${prompt}"`;
-    
-    if (scope === 'COMPONENT_ADDITION' && componentInfo) {
-      return `${baseReasoning}. Will create new ${componentInfo.type}: ${componentInfo.name}`;
-    }
-    
-    if (scope === 'TAILWIND_CHANGE' && colorChanges && colorChanges.length > 0) {
-      const colorSummary = colorChanges.map(change => `${change.type}: ${change.color}`).join(', ');
-      return `${baseReasoning}. Will modify tailwind.config.ts to update colors: ${colorSummary}`;
-    }
-
-    if (scope === 'TEXT_BASED_CHANGE' && textChangeAnalysis) {
-      return `${baseReasoning}. Will perform text replacement: "${textChangeAnalysis.searchTerm}" → "${textChangeAnalysis.replacementTerm}"`;
-    }
-    
-    return `${baseReasoning}. File analysis and element tree generation will determine specific targets.`;
   }
 }

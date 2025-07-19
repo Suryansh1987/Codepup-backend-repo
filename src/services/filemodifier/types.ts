@@ -1,5 +1,213 @@
 // ============================================================================
-// TYPES: filemodifier/types.ts - Complete Type Definitions with TAILWIND_CHANGE
+// ENHANCED TYPES FOR NEW SCOPEANALYZER + TARGETEDNODES ARCHITECTURE
+// ============================================================================
+
+// ============================================================================
+// NEW INTERFACES FOR ENHANCED SCOPE ANALYZER
+// ============================================================================
+
+export interface TargetNodeInfo {
+  filePath: string;
+  nodeId: string;
+  reason: string;
+}
+
+export interface AnalysisNode {
+  id: string;
+  tagName: string;
+  className?: string;
+  startLine: number;
+  endLine: number;
+  displayText?: string;
+  props?: Record<string, any>;
+  isInteractive?: boolean;
+}
+
+export interface ImportInfo {
+  source: string;
+  importType: 'default' | 'named' | 'namespace' | 'side-effect';
+  imports: string[];
+  line: number;
+  fullStatement: string;
+}
+
+export interface FileImportInfo {
+  filePath: string;
+  imports: ImportInfo[];
+  hasLucideReact: boolean;
+  hasReact: boolean;
+  allImportSources: string[];
+}
+
+export interface FileStructureInfo {
+  filePath: string;
+  nodes: AnalysisNode[];
+  imports?: FileImportInfo;
+}
+
+export interface TreeInformation {
+  fileStructures: FileStructureInfo[];
+  compactTree: string;
+  totalFiles: number;
+  totalNodes: number;
+  totalImports: number;
+}
+
+export interface AnalysisResponse {
+  needsModification: boolean;
+  targetNodes: TargetNodeInfo[];
+  reasoning: string;
+}
+
+// ============================================================================
+// ENHANCED MODIFICATION SCOPE (UPDATED)
+// ============================================================================
+
+export interface ModificationScope {
+  scope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE';
+  files: string[];
+  reasoning: string;
+
+  // NEW: For TARGETED_NODES (from enhanced ScopeAnalyzer)
+  treeInformation?: TreeInformation;
+  targetNodes?: TargetNodeInfo[];
+
+  // Component addition specific
+  componentName?: string;
+  componentType?: 'component' | 'page' | 'app';
+  dependencies?: string[];
+  integrationLevel?: ComponentIntegrationLevel;
+
+  // Tailwind change specific
+  colorChanges?: ColorChange[];
+
+  // Text-based change specific (ENHANCED)
+  textChangeAnalysis?: {
+    searchTerm: string;
+    replacementTerm: string;
+    searchVariations?: string[];
+  };
+
+  // Enhanced properties
+  estimatedComplexity?: 'low' | 'medium' | 'high';
+  requiresRouting?: boolean;
+  affectedLevels?: number[];
+}
+
+// ============================================================================
+// TOKEN TRACKING INTERFACES (ENHANCED)
+// ============================================================================
+
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+}
+
+export interface TokenStats {
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+  effectiveInputTokens?: number;
+  apiCalls: number;
+  averageInputPerCall: number;
+  averageOutputPerCall: number;
+  operationHistory?: Array<{
+    operation: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreation?: number;
+    cacheRead?: number;
+    timestamp: Date;
+  }>;
+}
+
+// ============================================================================
+// MODIFICATION NODE INTERFACES (for TargetedNodes)
+// ============================================================================
+
+export interface ModificationNode extends AnalysisNode {
+  startColumn: number;
+  endColumn: number;
+  fullCode: string;
+  fullAttributes: Record<string, any>;
+  startPos: number;
+  endPos: number;
+  lineBasedStart: number;
+  lineBasedEnd: number;
+  originalCode: string;
+  codeHash: string;
+  contextBefore: string;
+  contextAfter: string;
+  parentNode?: {
+    id: string;
+    tagName: string;
+    className?: string;
+    startLine: number;
+    endLine: number;
+  };
+}
+
+export interface ModificationRequest {
+  filePath: string;
+  nodeId: string;
+  newCode: string;
+  reasoning: string;
+  requiredImports?: ImportInfo[];
+}
+
+// ============================================================================
+// PROCESSING RESULT INTERFACES (ENHANCED)
+// ============================================================================
+
+export interface ProcessingResult {
+  success: boolean;
+  projectFiles?: Map<string, ProjectFile>;
+  updatedProjectFiles?: Map<string, ProjectFile>;
+  changes?: Array<{
+    type: string;
+    file: string;
+    description: string;
+    success: boolean;
+    details?: any;
+  }>;
+}
+
+export interface FileModificationResult {
+  filePath: string;
+  success: boolean;
+  modificationsApplied: number;
+  error?: string;
+}
+
+// ============================================================================
+// SCOPE DETERMINATION INTERFACES (ENHANCED)
+// ============================================================================
+
+export interface ScopeMethodResponse {
+  scope: "FULL_FILE" | "TARGETED_NODES" | "COMPONENT_ADDITION" | "TAILWIND_CHANGE" | "TEXT_BASED_CHANGE";
+  reasoning: string;
+  componentName?: string;
+  componentType?: 'component' | 'page' | 'app';
+  colorChanges?: ColorChange[];
+  textChangeAnalysis?: {
+    searchTerm: string;
+    replacementTerm: string;
+    searchVariations: string[];
+  };
+}
+
+// ============================================================================
+// STREAM CALLBACK TYPE
+// ============================================================================
+
+export type StreamCallback = (message: string) => void;
+
+// ============================================================================
+// EXISTING INTERFACES (KEEP AS-IS)
 // ============================================================================
 
 export interface ProjectFile {
@@ -188,86 +396,6 @@ export interface ModificationRecord {
   sessionId?: string;
 }
 
-// Helper types for file filtering and querying
-export type ProjectFileFilter = {
-  fileType?: string | string[];
-  framework?: ProjectFile['framework'];
-  hasComponent?: boolean;
-  isPage?: boolean;
-  isConfig?: boolean;
-  hasButtons?: boolean;
-  hasForm?: boolean;
-  stylingMethod?: ProjectFile['stylingMethod'];
-  componentType?: ProjectFile['componentType'];
-  hasApiCalls?: boolean;
-  isTest?: boolean;
-  hasNavigation?: boolean;
-  hasFooter?: boolean;
-  searchTerm?: string;
-  modifiedSince?: Date;
-  minComplexity?: number;
-  maxComplexity?: number;
-  technicalDebt?: ProjectFile['technicalDebt'];
-  hasSecurityIssues?: boolean;
-};
-
-// Query builder for advanced file searches
-export interface ProjectFileQuery {
-  filter?: ProjectFileFilter;
-  sortBy?: 'name' | 'size' | 'lines' | 'lastModified' | 'complexity' | 'maintainabilityIndex';
-  sortOrder?: 'asc' | 'desc';
-  limit?: number;
-  offset?: number;
-  includeContent?: boolean;
-  searchableFields?: ('name' | 'content' | 'textContent' | 'keywords')[];
-}
-
-// Analysis result for project overview
-export interface ProjectAnalysis {
-  totalFiles: number;
-  filesByType: Record<string, number>;
-  frameworksUsed: string[];
-  stylingMethods: string[];
-  componentCount: number;
-  pageCount: number;
-  testCoverage: number;
-  averageComplexity: number;
-  technicalDebtSummary: {
-    low: number;
-    medium: number;
-    high: number;
-  };
-  securityIssues: number;
-  performanceScore: number;
-  accessibilityScore: number;
-  seoScore: number;
-  maintenanceRecommendations: string[];
-}
-
-// Text search result for TEXT_BASED_CHANGE operations
-export interface TextSearchResult {
-  file: string;
-  matches: {
-    line: number;
-    column: number;
-    text: string;
-    context: string;
-    confidence: number;
-  }[];
-  totalMatches: number;
-  searchTerm: string;
-  variations: string[];
-}
-
-// Export utility functions type
-export type ProjectFileUtils = {
-  filterFiles: (files: ProjectFile[], filter: ProjectFileFilter) => ProjectFile[];
-  searchText: (files: ProjectFile[], searchTerm: string) => TextSearchResult[];
-  analyzeProject: (files: ProjectFile[]) => ProjectAnalysis;
-  suggestTargetFiles: (searchTerm: string, files: ProjectFile[]) => string[];
-  extractTextContent: (content: string, fileType: string) => ProjectFile['textContent'];
-};
-
 export interface TailwindConfig {
   colors: Record<string, any>;
   availableColors: string[];
@@ -325,7 +453,7 @@ export interface PageInfo {
   suggestedRoute: string;
 }
 
-// NEW: Color change interface for TAILWIND_CHANGE scope
+// Color change interface for TAILWIND_CHANGE scope
 export interface ColorChange {
   type: string;
   color: string;
@@ -337,7 +465,7 @@ export interface ModificationChange {
   file: string;
   description: string;
   timestamp: string;
-  approach?: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE'; // Updated with TAILWIND_CHANGE
+  approach?: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE';
   success?: boolean;
   details?: {
     linesChanged?: number;
@@ -377,7 +505,7 @@ export interface FileStructureSummary {
     path: string;
     exports: string[];
     level: number;
-    elementTree?: string; // ADD this line if missing
+    elementTree?: string;
   }>;
   appStructure: {
     path: string;
@@ -386,6 +514,7 @@ export interface FileStructureSummary {
     importedPages: string[];
   };
 }
+
 export interface GeneratedFile {
   filePath: string;
   content: string;
@@ -393,6 +522,7 @@ export interface GeneratedFile {
   success: boolean;
   error?: string;
 }
+
 export interface ComponentGenerationResult {
   success: boolean;
   generatedFile?: string;
@@ -409,33 +539,6 @@ export interface ComponentIntegrationLevel {
   description: string;
   compatibleWith: string[];
 }
-
-export interface ModificationScope {
-  scope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE';
-  files: string[];
-  reasoning: string;
-
-  // Component addition specific
-  componentName?: string;
-  componentType?: 'component' | 'page' | 'app';
-  dependencies?: string[];
-  integrationLevel?: ComponentIntegrationLevel;
-
-  // Tailwind change specific
-  colorChanges?: ColorChange[];
-
-  // Text-based change specific (NEW)
-  textChangeAnalysis?: {
-    searchTerm: string;
-    replacementTerm: string;
-  };
-
-  // Enhanced properties
-  estimatedComplexity?: 'low' | 'medium' | 'high';
-  requiresRouting?: boolean;
-  affectedLevels?: number[];
-}
-
 
 export interface ModificationResult {
   success: boolean;
@@ -485,7 +588,7 @@ export interface ModificationResult {
   executionTime?: number;
   diffPatches?: DiffPatch[];
 
-  // ✅ NEW: Add this for hybrid search stats
+  // Hybrid search stats
   hybridStats?: {
     filesScanned: number;
     nodesExtracted: number;
@@ -495,25 +598,22 @@ export interface ModificationResult {
     processingTime: string;
   };
 
-  // ✅ Optional: for returning full Claude batch output
+  // Optional: for returning full Claude batch output
   batchResults?: any[];
 }
-
-
 
 export interface CodeChange {
   filePath: string;
   originalText: string;
   modifiedText: string;
   modelUsed: string;
-  [key: string]: any; // Optional additional fields
+  [key: string]: any;
 }
 
 export interface DiffPatch {
   filePath: string;
   diff: string;
 }
-
 
 export interface FileRequirement {
   filePath: string;
@@ -523,6 +623,7 @@ export interface FileRequirement {
   priority: 'high' | 'medium' | 'low';
   operation: 'create' | 'update' | 'skip';
 }
+
 export interface ComponentAnalysis {
   type: 'component' | 'page';
   name: string;
@@ -533,10 +634,10 @@ export interface ComponentAnalysis {
     needsLayout: boolean;
     needsHeader: boolean;
     needsFooter: boolean;
-    layoutStrategy: 'wrapper' | 'embedded' | 'create' | 'reuse'; // Added 'reuse'
-    existingHeaderPath?: string; // NEW: Path to existing header
-    existingFooterPath?: string; // NEW: Path to existing footer
-    reuseExistingLayout: boolean; // NEW: Whether to reuse existing layout components
+    layoutStrategy: 'wrapper' | 'embedded' | 'create' | 'reuse';
+    existingHeaderPath?: string;
+    existingFooterPath?: string;
+    reuseExistingLayout: boolean;
   };
   colorScheme: {
     primary: string;
@@ -545,6 +646,7 @@ export interface ComponentAnalysis {
     neutral: string;
   };
 }
+
 export interface LayoutStructure {
   hasLayout: boolean;
   layoutPath?: string;
@@ -552,6 +654,7 @@ export interface LayoutStructure {
   footerPath?: string;
   layoutType: 'wrapper' | 'embedded' | 'none';
 }
+
 export interface ProjectStructureAnalysis {
   totalComponents: number;
   totalPages: number;
@@ -689,7 +792,7 @@ export interface DependencyInfo {
 
 // Scope analysis interfaces
 export interface ScopeAnalysisResult {
-  scope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE'; // Updated with TAILWIND_CHANGE
+  scope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE';
   reasoning: string;
   confidence: number;
   files: string[];
@@ -697,7 +800,7 @@ export interface ScopeAnalysisResult {
 }
 
 // ============================================================================
-// NEW: TAILWIND-SPECIFIC TYPES AND INTERFACES
+// TAILWIND-SPECIFIC TYPES AND INTERFACES
 // ============================================================================
 
 // Tailwind configuration modification interfaces
@@ -787,10 +890,10 @@ export interface TailwindModificationSummary {
 // ============================================================================
 
 export interface EnhancedScopeAnalysisResult {
-  primaryScope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE';
+  primaryScope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE';
   confidence: number;
   alternatives: Array<{
-    scope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE';
+    scope: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE';
     confidence: number;
     reasoning: string;
   }>;
@@ -799,12 +902,18 @@ export interface EnhancedScopeAnalysisResult {
     targetedNodes: number;
     componentAddition: number;
     fullFile: number;
+    textBasedChange: number;
   };
   extractedData: {
     componentName?: string;
     componentType?: 'component' | 'page' | 'app';
     colorChanges?: ColorChange[];
     targetElements?: string[];
+    textChangeAnalysis?: {
+      searchTerm: string;
+      replacementTerm: string;
+      searchVariations: string[];
+    };
   };
   reasoning: string;
 }
@@ -814,7 +923,7 @@ export interface DetailedModificationLog {
   modifications: EnhancedModificationChange[];
   summary: {
     totalFiles: number;
-    approaches: Record<'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE', number>;
+    approaches: Record<'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE', number>;
     successRate: number;
     averageProcessingTime: number;
     mostModifiedFiles: Array<{ file: string; count: number }>;
@@ -822,7 +931,7 @@ export interface DetailedModificationLog {
   timeline: Array<{
     timestamp: Date;
     event: string;
-    approach: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE';
+    approach: 'FULL_FILE' | 'TARGETED_NODES' | 'COMPONENT_ADDITION' | 'TAILWIND_CHANGE' | 'TEXT_BASED_CHANGE';
     success: boolean;
   }>;
 }
@@ -878,6 +987,7 @@ export type ProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed'
 
 // Constants for modification approaches
 export const MODIFICATION_APPROACHES = [
+  'TEXT_BASED_CHANGE',
   'TAILWIND_CHANGE',
   'TARGETED_NODES', 
   'COMPONENT_ADDITION',
@@ -923,17 +1033,141 @@ export function isTailwindChangeScope(scope: ModificationScope): scope is Modifi
   return scope.scope === 'TAILWIND_CHANGE';
 }
 
+export function isTargetedNodesScope(scope: ModificationScope): scope is ModificationScope & { 
+  scope: 'TARGETED_NODES';
+  treeInformation: TreeInformation;
+  targetNodes: TargetNodeInfo[];
+} {
+  return scope.scope === 'TARGETED_NODES' && !!scope.treeInformation && !!scope.targetNodes;
+}
+
 export function isComponentAdditionScope(scope: ModificationScope): scope is ModificationScope & { scope: 'COMPONENT_ADDITION' } {
   return scope.scope === 'COMPONENT_ADDITION';
+}
+
+export function isTextBasedChangeScope(scope: ModificationScope): scope is ModificationScope & { 
+  scope: 'TEXT_BASED_CHANGE';
+  textChangeAnalysis: {
+    searchTerm: string;
+    replacementTerm: string;
+    searchVariations?: string[];
+  };
+} {
+  return scope.scope === 'TEXT_BASED_CHANGE' && !!scope.textChangeAnalysis;
 }
 
 export function hasColorChanges(scope: ModificationScope): scope is ModificationScope & { colorChanges: ColorChange[] } {
   return scope.scope === 'TAILWIND_CHANGE' && !!scope.colorChanges;
 }
 
+export function hasTargetNodes(scope: ModificationScope): scope is ModificationScope & { 
+  targetNodes: TargetNodeInfo[];
+  treeInformation: TreeInformation;
+} {
+  return scope.scope === 'TARGETED_NODES' && !!scope.targetNodes && !!scope.treeInformation;
+}
+
+export function hasTextChangeAnalysis(scope: ModificationScope): scope is ModificationScope & {
+  textChangeAnalysis: {
+    searchTerm: string;
+    replacementTerm: string;
+    searchVariations?: string[];
+  };
+} {
+  return scope.scope === 'TEXT_BASED_CHANGE' && !!scope.textChangeAnalysis;
+}
+
 export function hasTailwindModification(result: ModificationResult): result is ModificationResult & { tailwindModification: NonNullable<ModificationResult['tailwindModification']> } {
   return result.approach === 'TAILWIND_CHANGE' && !!result.tailwindModification;
 }
+
+// ============================================================================
+// HELPER TYPES FOR PROJECT FILE FILTERING
+// ============================================================================
+
+// Helper types for file filtering and querying
+export type ProjectFileFilter = {
+  fileType?: string | string[];
+  framework?: ProjectFile['framework'];
+  hasComponent?: boolean;
+  isPage?: boolean;
+  isConfig?: boolean;
+  hasButtons?: boolean;
+  hasForm?: boolean;
+  stylingMethod?: ProjectFile['stylingMethod'];
+  componentType?: ProjectFile['componentType'];
+  hasApiCalls?: boolean;
+  isTest?: boolean;
+  hasNavigation?: boolean;
+  hasFooter?: boolean;
+  searchTerm?: string;
+  modifiedSince?: Date;
+  minComplexity?: number;
+  maxComplexity?: number;
+  technicalDebt?: ProjectFile['technicalDebt'];
+  hasSecurityIssues?: boolean;
+};
+
+// Query builder for advanced file searches
+export interface ProjectFileQuery {
+  filter?: ProjectFileFilter;
+  sortBy?: 'name' | 'size' | 'lines' | 'lastModified' | 'complexity' | 'maintainabilityIndex';
+  sortOrder?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+  includeContent?: boolean;
+  searchableFields?: ('name' | 'content' | 'textContent' | 'keywords')[];
+}
+
+// Analysis result for project overview
+export interface ProjectAnalysis {
+  totalFiles: number;
+  filesByType: Record<string, number>;
+  frameworksUsed: string[];
+  stylingMethods: string[];
+  componentCount: number;
+  pageCount: number;
+  testCoverage: number;
+  averageComplexity: number;
+  technicalDebtSummary: {
+    low: number;
+    medium: number;
+    high: number;
+  };
+  securityIssues: number;
+  performanceScore: number;
+  accessibilityScore: number;
+  seoScore: number;
+  maintenanceRecommendations: string[];
+}
+
+// Text search result for TEXT_BASED_CHANGE operations
+export interface TextSearchResult {
+  file: string;
+  matches: {
+    line: number;
+    column: number;
+    text: string;
+    context: string;
+    confidence: number;
+  }[];
+  totalMatches: number;
+  searchTerm: string;
+  variations: string[];
+}
+
+// Export utility functions type
+export type ProjectFileUtils = {
+  filterFiles: (files: ProjectFile[], filter: ProjectFileFilter) => ProjectFile[];
+  searchText: (files: ProjectFile[], searchTerm: string) => TextSearchResult[];
+  analyzeProject: (files: ProjectFile[]) => ProjectAnalysis;
+  suggestTargetFiles: (searchTerm: string, files: ProjectFile[]) => string[];
+  extractTextContent: (content: string, fileType: string) => ProjectFile['textContent'];
+};
+
+// ============================================================================
+// BACKWARD COMPATIBILITY TYPES
+// ============================================================================
 
 // Legacy compatibility - for backward compatibility with existing code
 export interface LegacyModificationScope {
@@ -956,3 +1190,108 @@ export interface LegacyModificationResult {
   componentGenerationResult?: ComponentGenerationResult;
   tokenUsage?: TokenUsageStats;
 }
+
+// ============================================================================
+// ENHANCED PROCESSOR INTERFACES
+// ============================================================================
+
+// Interface for processors that support the new architecture
+export interface EnhancedProcessor {
+  setStreamCallback(callback: StreamCallback): void;
+  getTokenTracker?(): any;
+  process?(
+    prompt: string,
+    projectFiles: Map<string, ProjectFile>,
+    reactBasePath: string,
+    streamCallback: StreamCallback,
+    additionalData?: any
+  ): Promise<ProcessingResult>;
+}
+
+// Interface for ScopeAnalyzer with enhanced capabilities
+export interface EnhancedScopeAnalyzer extends EnhancedProcessor {
+  analyzeScope(
+    prompt: string,
+    projectSummary?: string,
+    conversationContext?: string,
+    dbSummary?: string,
+    projectFiles?: Map<string, ProjectFile>
+  ): Promise<ModificationScope>;
+  
+  getTokenStats(): TokenStats;
+  getTokenReport(): string;
+}
+
+// Interface for TargetedNodes processor (simplified)
+export interface SimplifiedTargetedNodesProcessor extends EnhancedProcessor {
+  processTargetedModification(
+    prompt: string,
+    projectFiles: Map<string, ProjectFile>,
+    reactBasePath: string,
+    streamCallback: StreamCallback,
+    treeInformation?: TreeInformation,
+    targetNodes?: TargetNodeInfo[]
+  ): Promise<ProcessingResult>;
+}
+
+// ============================================================================
+// CONFIGURATION AND SETTINGS
+// ============================================================================
+
+export interface ProcessorConfiguration {
+  // Global settings
+  reactBasePath: string;
+  sessionId: string;
+  
+  // AI settings
+  anthropicApiKey?: string;
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  
+  // Feature flags
+  enableEnhancedScopeAnalysis?: boolean;
+  enableTreeCaching?: boolean;
+  enableTokenTracking?: boolean;
+  enableDetailedLogging?: boolean;
+  
+  // Performance settings
+  batchSize?: number;
+  concurrencyLimit?: number;
+  cacheTimeout?: number;
+  
+  // Processing options
+  fallbackToFullFile?: boolean;
+  validateResults?: boolean;
+  createBackups?: boolean;
+  
+  // Tailwind specific
+  tailwindConfigPath?: string;
+  tailwindIndustry?: keyof typeof DEFAULT_TAILWIND_COLORS;
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+export interface ProcessingError {
+  code: string;
+  message: string;
+  details?: any;
+  timestamp: string;
+  operation?: string;
+  processor?: string;
+  stackTrace?: string;
+}
+
+export interface ErrorRecoveryOptions {
+  retryCount?: number;
+  fallbackProcessor?: string;
+  skipValidation?: boolean;
+  useCache?: boolean;
+}
+
+// ============================================================================
+// EXPORT ALL TYPES
+// ============================================================================
+
