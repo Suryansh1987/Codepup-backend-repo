@@ -34,15 +34,17 @@ const conversationService = new ConversationService();
 // Initialize with dependencies (should be passed from main server)
 let messageDB: DrizzleMessageHistoryDB;
 let sessionManager: StatelessSessionManager;
-
+let moduleActiveStreams: Map<string, AbortController>; 
 // Function to initialize dependencies
 export function initializeAgentRoutes(
   anthropic: Anthropic,
   db: DrizzleMessageHistoryDB,
-  sessionMgr: StatelessSessionManager
+  sessionMgr: StatelessSessionManager,
+   activeStreams: Map<string, AbortController>
 ): Router {
   messageDB = db;
   sessionManager = sessionMgr;
+   moduleActiveStreams = activeStreams;
   return router;
 }
 
@@ -589,6 +591,10 @@ router.get("/schema/:projectId", async (req: Request, res: Response) => {
 
 // Streaming frontend generation - from generation route pattern
 //@ts-ignore
+// Fixed backend streaming implementation
+
+// OPTIMIZED BACKEND ROUTE - REDUCED CHUNK FREQUENCY
+//@ts-ignore
 router.post("/generate-frontend", async (req: Request, res: Response) => {
   const {
     projectId,
@@ -609,16 +615,20 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
       error: "All Supabase configuration fields are required (supabaseUrl, supabaseAnonKey, supabaseToken, databaseUrl)" 
     });
   }
-
-  // Initialize buildId and session here (like generation route)
+  //Abortcontroller
+const controller = new AbortController();
+  moduleActiveStreams.set(projectId.toString(), controller);
+  // Initialize buildId and session here
   const buildId = uuidv4();
   const sessionId = sessionManager.generateSessionId();
   const sourceTemplateDir = path.join(__dirname, "../../react-base");
   const tempBuildDir = path.join(__dirname, "../../temp-builds", buildId);
-  let projectSaved = false;
   let accumulatedResponse = "";
   let totalLength = 0;
-  const CHUNK_SIZE = 10000;
+  
+  // PERFORMANCE: Increased chunk size and reduced frequency
+  const CHUNK_SIZE = 5000; // Larger chunks: 5KB instead of 1KB
+  const CHUNK_THROTTLE = 3; // Send every 3rd chunk instead of every chunk
 
   // Set up Server-Sent Events for streaming
   res.writeHead(200, {
@@ -630,6 +640,7 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
   });
 
   const sendStreamingUpdate = (data: any) => {
+    console.log(`[${buildId}] 📡 Sending update:`, data.type, data.message);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
@@ -650,7 +661,7 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
       lastActivity: Date.now(),
     });
 
-    // USER RESOLUTION with Clerk ID support (similar to generation route)
+    // USER RESOLUTION with Clerk ID support
     let userId: number;
     try {
       if (clerkId) {
@@ -693,6 +704,8 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
         sessionId,
         error: "Failed to resolve user for project generation",
       });
+      moduleActiveStreams.delete(projectId.toString());
+console.log(`[${buildId}] ✅ Cleaned up stream for project ${projectId}`);
       res.end();
       return;
     }
@@ -737,7 +750,7 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
 
     const generatedFiles = conversation.generatedFiles as any;
 
-    // Write configuration files (from old route)
+    // Write configuration files
     if (generatedFiles["tailwind.config.ts"]) {
       await fs.promises.writeFile(
         path.join(tempBuildDir, "tailwind.config.ts"),
@@ -805,19 +818,120 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
       "src/types/index.ts": generatedFiles["src/types/index.ts"],
     };
 
-    console.log(`[${buildId}] 🎨 Generating frontend for project ${projectId}`);
+    console.log(`[${buildId}] 📋 File structure available:`, !!fileStructure);
+    console.log(`[${buildId}] 🗄️ Backend files available:`, Object.keys(backendFiles).length);
+    console.log(`[${buildId}] 🎨 Tailwind config available:`, !!tailwindConfig);
+    console.log(`[${buildId}] 📜 Index CSS available:`, !!indexCss);
 
-    // Generate frontend files with Claude
-    const result = await claudeService.generateFrontendFiles(
+    // PERFORMANCE: Enhanced streaming callback with throttling and batching
+    let chunkCount = 0;
+    let lastSentChunk = 0;
+    let chunkBuffer = "";
+    let lastUpdateTime = Date.now();
+    
+    const streamCallback = (chunk: string) => {
+      accumulatedResponse += chunk;
+      chunkBuffer += chunk;
+      chunkCount++;
+      
+      const now = Date.now();
+      const timeSinceLastUpdate = now - lastUpdateTime;
+      
+      // PERFORMANCE: Send chunks less frequently
+      // Only send if: 
+      // 1. Every CHUNK_THROTTLE chunks, OR
+      // 2. Buffer is large (>CHUNK_SIZE), OR  
+      // 3. It's been more than 2 seconds since last update
+      const shouldSendChunk = (
+        chunkCount % CHUNK_THROTTLE === 0 || 
+        chunkBuffer.length > CHUNK_SIZE ||
+        timeSinceLastUpdate > 2000
+      );
+      
+      if (shouldSendChunk) {
+        console.log(`[${buildId}] 📦 Sending batch ${Math.floor(chunkCount/CHUNK_THROTTLE)}: ${chunkBuffer.length} chars (total: ${accumulatedResponse.length})`);
+        
+        // Send the batched chunk
+        sendStreamingUpdate({
+          type: "chunk",
+          buildId,
+          sessionId,
+          chunk: chunkBuffer,
+          currentLength: accumulatedResponse.length,
+          totalLength: accumulatedResponse.length,
+          percentage: Math.min(15 + (accumulatedResponse.length / 100000) * 40, 55),
+        });
+        
+        // Reset buffer and update time
+        chunkBuffer = "";
+        lastUpdateTime = now;
+        lastSentChunk = chunkCount;
+      }
+      
+  
+      if (chunkCount % (CHUNK_THROTTLE * 5) === 0) { 
+        sendStreamingUpdate({
+          type: "progress",
+          buildId,
+          sessionId,
+          phase: "generating",
+          message: `Generating frontend code... (${Math.floor(accumulatedResponse.length / 1000)}k characters, ${Math.floor(chunkCount/CHUNK_THROTTLE)} batches)`,
+          percentage: Math.min(15 + (accumulatedResponse.length / 100000) * 40, 55),
+        });
+      }
+    };
+
+    const currentConfig = claudeService.getCurrentConfig();
+    console.log(`[${buildId}] 🎨 Generating frontend for project ${projectId}`);
+    console.log(`[${buildId}] 🤖 Using ${currentConfig.provider}/${currentConfig.model}`);
+
+    // Add timeout to prevent hanging
+    const GENERATION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+    const generationPromise = claudeService.generateFrontendFilesRaw(
       designChoices,
       fileStructure,
       backendFiles,
       userId.toString(),
       tailwindConfig,
-      indexCss
+      indexCss,
+      streamCallback,
+       controller.signal 
     );
 
-    if (!result) {
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Generation timeout after 5 minutes')), GENERATION_TIMEOUT);
+    });
+
+    const result = await Promise.race([generationPromise, timeoutPromise]) as any;
+
+    // Send any remaining chunk buffer
+    if (chunkBuffer.length > 0) {
+      console.log(`[${buildId}] 📦 Sending final chunk: ${chunkBuffer.length} chars`);
+      sendStreamingUpdate({
+        type: "chunk",
+        buildId,
+        sessionId,
+        chunk: chunkBuffer,
+        currentLength: accumulatedResponse.length,
+        totalLength: accumulatedResponse.length,
+        percentage: 55,
+      });
+    }
+
+    console.log(`[${buildId}] ✅ Claude frontend generation result:`, {
+      success: result.success,
+      hasContent: !!result.content,
+      provider: result.provider,
+      model: result.model,
+      stopReason: result.stop_reason,
+      inputTokens: result.inputTokens,
+      outputTokens: result.tokenused,
+      totalChunks: chunkCount,
+      batchesSent: Math.floor(chunkCount/CHUNK_THROTTLE),
+      totalLength: accumulatedResponse.length,
+    });
+
+    if (!result.success || !result.content) {
       sendStreamingUpdate({
         type: "error",
         buildId,
@@ -828,6 +942,9 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
       return;
     }
 
+    // Update total length now that we have the complete response
+    totalLength = accumulatedResponse.length;
+
     sendStreamingUpdate({
       type: "progress",
       buildId,
@@ -837,18 +954,45 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
       percentage: 60,
     });
 
-    console.log(`[${buildId}] ✅ Claude frontend generation completed`);
+    console.log(`[${buildId}] ✅ Claude frontend generation completed with ${totalLength} characters`);
 
-    // Parse the generated code using LLMCodeParser
-    const claudeResponse = (result.content[0] as any).text;
-    const parsedResult = LLMCodeParser.parseFrontendCode(claudeResponse);
-    
-    if (!parsedResult || !parsedResult.codeFiles || parsedResult.codeFiles.length === 0) {
+    // Parse the generated code using LLMCodeParser from RAW response
+    const textContent = result.content.find((c: any) => c.type === "text");
+    if (!textContent || !textContent.text) {
       sendStreamingUpdate({
         type: "error",
         buildId,
         sessionId,
-        error: "Failed to parse generated frontend code - no code files found",
+        error: "No text content found in Claude response",
+      });
+      res.end();
+      return;
+    }
+
+    const claudeResponse = textContent.text;
+    let parsedResult;
+
+    try {
+      parsedResult = LLMCodeParser.parseFrontendCode(claudeResponse);
+      
+      if (!parsedResult || !parsedResult.codeFiles || parsedResult.codeFiles.length === 0) {
+        throw new Error("No code files found in parsed result");
+      }
+      
+      console.log(`[${buildId}] ✅ Successfully parsed ${parsedResult.codeFiles.length} files`);
+      
+      // Debug: Preview the parsed files
+      if (process.env.NODE_ENV === 'development') {
+        LLMCodeParser.previewFiles(parsedResult);
+      }
+      
+    } catch (parseError) {
+      console.error(`[${buildId}] ❌ Parsing error:`, parseError);
+      sendStreamingUpdate({
+        type: "error",
+        buildId,
+        sessionId,
+        error: `Failed to parse generated frontend code: ${parseError instanceof Error ? parseError.message : 'Unknown parsing error'}`,
       });
       res.end();
       return;
@@ -904,7 +1048,7 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
       percentage: 80,
     });
 
-    // Create zip package similar to generation route
+    // Create zip package
     const zip = new AdmZip();
     zip.addLocalFolder(tempBuildDir);
     const zipBuffer = zip.toBuffer();
@@ -927,55 +1071,15 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
     });
 
     // Generate project summary
-    const projectSummary = generateProjectSummary({
-      codeFiles: parsedResult.codeFiles,
+    const projectSummary = {
+      totalFiles: parsedResult.codeFiles.length,
+      fileTypes: categorizeFilesByExtension(parsedResult.codeFiles),
+      pages: parsedResult.codeFiles.filter(f => f.path.includes('/pages/')).length,
+      components: parsedResult.codeFiles.filter(f => f.path.includes('/components/')).length,
+      contexts: parsedResult.codeFiles.filter(f => f.path.includes('/contexts/')).length,
+      utils: parsedResult.codeFiles.filter(f => f.path.includes('/utils/')).length,
       structure: parsedResult.structure,
-    });
-
-    // Create enhanced project structure for description
-    const structureForDescription = JSON.stringify({
-      structure: parsedResult.structure,
-      summary: projectSummary,
-      validation: {
-        fileStructure: true,
-        supabase: true,
-        tailwind: tailwindConfig ? validateTailwindConfig(tailwindConfig) : false,
-      },
-      supabaseInfo: {
-        filesFound: Object.keys(backendFiles).length,
-        hasConfig: true,
-        migrationCount: 1,
-        hasSeedFile: !!generatedFiles["supabase/seed.sql"],
-      },
-      metadata: {
-        buildId: buildId,
-        filesGenerated: parsedResult.codeFiles.length,
-        generatedAt: new Date().toISOString(),
-        framework: "react",
-        template: "vite-react-ts"
-      }
-    });
-
-    await sessionManager.updateSessionContext(sessionId, {
-      projectSummary: {
-        structure: parsedResult.structure,
-        summary: projectSummary,
-        validation: {
-          fileStructure: true,
-          supabase: true,
-          tailwind: tailwindConfig ? validateTailwindConfig(tailwindConfig) : false,
-        },
-        supabaseInfo: {
-          filesFound: Object.keys(backendFiles).length,
-          hasConfig: true,
-          migrationCount: 1,
-          hasSeedFile: !!generatedFiles["supabase/seed.sql"],
-        },
-        zipUrl: zipUrl,
-        buildId: buildId,
-        filesGenerated: parsedResult.codeFiles.length,
-      },
-    });
+    };
 
     // Trigger Azure Container Job
     console.log(`[${buildId}] 🔧 Triggering Azure Container Job...`);
@@ -1018,59 +1122,18 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
     };
 
     // Add parsed files to the conversation
-    parsedResult.codeFiles.forEach(file => {
+    parsedResult.codeFiles.forEach((file) => {
       allFiles[file.path] = file.content;
     });
 
-    await conversationService.updateConversationByProject(projectId, {
+    await conversationService.updateConversationWithLLMInfo(projectId, {
       currentStep: "frontend_completed",
       generatedFiles: allFiles,
+      llmProvider: currentConfig.provider,
+      llmModel: currentConfig.model,
+      inputTokens: result.inputTokens,
+      outputTokens: result.tokenused,
     });
-
-    await conversationService.saveMessageByProject(projectId, {
-      agentResponse: `Frontend application generated successfully! ${filesWritten} files written and deployed.`,
-      functionCalled: "generate_frontend_application",
-    });
-
-    // Save assistant response to message history with structure
-    try {
-      const assistantMessageId = await messageDB.addMessage(
-        structureForDescription, // Store the enhanced structure as message content
-        "assistant",
-        {
-          projectId: projectId,
-          sessionId: sessionId,
-          userId: userId,
-          functionCalled: "frontend_generation",
-          buildId: buildId,
-          previewUrl: previewUrl,
-          downloadUrl: urls.downloadUrl,
-          zipUrl: zipUrl,
-        }
-      );
-      console.log(`[${buildId}] 💾 Saved enhanced structure to messageDB (ID: ${assistantMessageId})`);
-    } catch (dbError) {
-      console.warn(`[${buildId}] ⚠️ Failed to save structure to messageDB:`, dbError);
-    }
-
-    // Update project record with deployment URLs
-    try {
-      await messageDB.updateProject(projectId, {
-        deploymentUrl: previewUrl,
-        downloadUrl: urls.downloadUrl,
-        zipUrl: zipUrl,
-        buildId: buildId,
-        status: "ready",
-        supabaseurl: supabaseUrl,
-        aneonkey: supabaseAnonKey,
-        // Update description with structure for frontend projects
-        description: structureForDescription,
-        generatedCode: parsedResult.structure,
-      });
-      console.log(`[${buildId}] ✅ Updated project record with deployment URLs`);
-    } catch (updateError) {
-      console.warn(`[${buildId}] Failed to update project URLs:`, updateError);
-    }
 
     sendStreamingUpdate({
       type: "progress",
@@ -1123,16 +1186,29 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
         validConfig: tailwindConfig ? validateTailwindConfig(tailwindConfig) : false,
       },
       hosting: "Azure Static Web Apps",
-      features: ["Global CDN", "Auto SSL/HTTPS", "Custom domains support", "Staging environments"],
+      features: [
+        "Global CDN",
+        "Auto SSL/HTTPS",
+        "Custom domains support",
+        "Staging environments",
+      ],
       streamingStats: {
         totalCharacters: totalLength,
-        chunksStreamed: Math.floor(totalLength / CHUNK_SIZE),
+        chunksStreamed: chunkCount,
+        batchesSent: Math.floor(chunkCount/CHUNK_THROTTLE),
+        throttleRatio: CHUNK_THROTTLE,
       },
       supabaseConfig: {
         url: supabaseUrl,
         configured: true,
-        filesIncluded: ["migrations", "seed", "types"]
-      }
+        filesIncluded: ["migrations", "seed", "types"],
+      },
+      llmStats: {
+        provider: currentConfig.provider,
+        model: currentConfig.model,
+        inputTokens: result.inputTokens,
+        outputTokens: result.tokenused,
+      },
     };
 
     sendStreamingUpdate({
@@ -1144,10 +1220,11 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
 
     res.end();
     console.log(`[${buildId}] ✅ Frontend generation and deployment completed successfully`);
+    console.log(`[${buildId}] 📊 Performance: ${chunkCount} chunks → ${Math.floor(chunkCount/CHUNK_THROTTLE)} batches sent (${CHUNK_THROTTLE}x reduction)`);
 
   } catch (error) {
     console.error(`[${buildId}] ❌ Frontend generation failed:`, error);
-    
+     moduleActiveStreams.delete(projectId.toString());
     sendStreamingUpdate({
       type: "error",
       buildId,
@@ -1155,29 +1232,36 @@ router.post("/generate-frontend", async (req: Request, res: Response) => {
       error: error instanceof Error ? error.message : "Unknown error occurred during frontend generation",
     });
 
-    // Save error to messageDB
-    try {
-      await messageDB.addMessage(
-        `Frontend generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        "assistant",
-        {
-          projectId: projectId,
-          sessionId: sessionId,
-          userId: providedUserId,
-          functionCalled: "frontend_generation",
-          buildId: buildId,
-        }
-      );
-    } catch (dbError) {
-      console.warn(`[${buildId}] ⚠️ Failed to save error to messageDB:`, dbError);
-    }
-
     // Cleanup on error
-    await sessionManager.cleanup(sessionId);
-    await cleanupTempDirectory(buildId);
+    try {
+      await sessionManager.cleanup(sessionId);
+      await cleanupTempDirectory(buildId);
+    } catch (cleanupError) {
+      console.warn(`[${buildId}] ⚠️ Cleanup failed:`, cleanupError);
+    }
+    
     res.end();
   }
 });
+
+// Helper function for file categorization
+function categorizeFilesByExtension(files: any[]): Record<string, number> {
+  const categories: Record<string, number> = {};
+  
+  files.forEach(file => {
+    const extension = file.path.split('.').pop()?.toLowerCase();
+    const type = extension === 'tsx' || extension === 'ts' ? 'typescript' :
+                 extension === 'jsx' || extension === 'js' ? 'javascript' :
+                 extension === 'css' ? 'css' :
+                 extension === 'json' ? 'json' :
+                 extension === 'md' ? 'markdown' :
+                 extension === 'html' ? 'html' :
+                 extension === 'env' ? 'env' : 'unknown';
+    categories[type] = (categories[type] || 0) + 1;
+  });
+
+  return categories;
+}
 
 // Legacy streaming endpoint (keeping for compatibility)
 router.get("/generate-frontend-stream/:projectId",

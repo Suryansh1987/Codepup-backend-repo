@@ -27,12 +27,22 @@ router.post("/", async (req: Request, res: Response) => {
 });
 
 // Get projects by user ID
+// In your projects route
+// In your projects route
 router.get("/user/:userId", async (req: Request, res: Response) => {
   try {
-    const projects = await projectService.getProjectsByUserId(
-      parseInt(req.params.userId)
+    const userId = parseInt(req.params.userId);
+    
+    // Get all projects
+    const allProjects = await projectService.getProjectsByUserId(userId);
+    
+    // Filter out deleted projects using status
+    const activeProjects = allProjects.filter(project => 
+      project.status !== 'deleted'
     );
-    res.json(projects);
+    
+    console.log(`📋 Found ${activeProjects.length} active projects (${allProjects.length} total)`);
+    res.json(activeProjects);
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }

@@ -50,8 +50,40 @@ export class DrizzleMessageHistoryDB {
     }
   }
 
+// Add these two methods to your existing DrizzleMessageHistoryDB class
 
+/**
+ * Update project description with structure mapping
+ */
+async updateProjectMapping(projectId: number, mappingJson: string): Promise<boolean> {
+  try {
+    console.log(`📝 Updating project ${projectId} with structure mapping...`);
+    
+    const result = await this.db
+      .update(projects)
+      .set({ 
+        description: mappingJson,
+        updatedAt: new Date()
+      })
+      .where(eq(projects.id, projectId))
+      .returning({ id: projects.id });
 
+    if (result.length > 0) {
+      console.log(`✅ Successfully updated project ${projectId} description with mapping`);
+      return true;
+    } else {
+      console.error(`❌ No project found with ID ${projectId}`);
+      return false;
+    }
+  } catch (error) {
+    console.error(`❌ Failed to update project mapping for ID ${projectId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Get complete project structure data
+ */
 async getProjectStructure(projectId: number): Promise<string | null> {
   try {
     // Get ALL project data in one query
@@ -60,23 +92,25 @@ async getProjectStructure(projectId: number): Promise<string | null> {
       .from(projects)
       .where(eq(projects.id, projectId))
       .limit(1);
-    
+       
     if (project.length === 0) {
       console.log(`Project ${projectId} not found`);
       return null;
     }
-    
+       
     const projectData = project[0];
-    
+       
     // Return the complete project data as JSON
     // The analysis engine can then differentiate what it needs
     return JSON.stringify(projectData);
-    
+     
   } catch (error) {
     console.error(`Error getting project structure for project ${projectId}:`, error);
     return null;
   }
 }
+
+
 
 // Additional helper method for component-specific structure analysis
 async getProjectComponentStructure(projectId: number): Promise<any | null> {

@@ -5,6 +5,7 @@ import { StatelessSessionManager } from "./session";
 import { DrizzleMessageHistoryDB } from "../db/messagesummary";
 import { RedisService } from "../services/Redis";
 import { EnhancedProjectUrlManager } from "../db/url-manager";
+import { generateProjectMappingString } from '../utils/project-map';
 import { v4 as uuidv4 } from "uuid";
 import AdmZip from "adm-zip";
 import axios from "axios";
@@ -336,7 +337,19 @@ export function initializeModificationRoutes(
 
           //@ts-ignore
           const previewUrl = await runBuildAndDeploy(builtZipUrl, buildId);
-
+try {
+  sendEvent('progress', { step: 14, total: 17, message: 'Generating project structure mapping...', buildId, sessionId });
+  
+  const projectMappingJson = await generateProjectMappingString(tempBuildDir);
+  const mappingSuccess = await messageDB.updateProjectMapping(requestedProjectId , projectMappingJson);
+  
+  if (mappingSuccess) {
+    console.log(`✅ [${buildId}] Project structure mapping saved successfully`);
+    sendEvent('progress', { step: 15, total: 17, message: '📊 Project structure mapped and saved!', buildId, sessionId });
+  }
+} catch (mappingError) {
+  console.error(`❌ [${buildId}] Error generating project mapping:`, mappingError);
+}
           sendEvent("progress", {
             step: 8,
             total: 10,
@@ -379,6 +392,13 @@ export function initializeModificationRoutes(
             sessionId,
           });
 
+
+
+sendEvent('progress', { step: 16, total: 17, message: 'Cleaning up...', buildId, sessionId });
+clearTimeout(cleanupTimer);
+await cleanupTempDirectory(buildId);
+
+sendEvent('progress', { step: 17, total: 17, message: `🎉 Live at: ${previewUrl}`, buildId, sessionId });
           clearTimeout(cleanupTimer);
           await cleanupTempDirectory(buildId);
 
