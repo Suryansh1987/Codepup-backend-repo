@@ -48,6 +48,7 @@ app.use((req, res, next) => {
   }
 });
 
+
 // Initialize services
 async function initializeServices() {
   try {
@@ -100,7 +101,37 @@ app.get("/", (req: Request, res: Response) => {
     version: "3.0.0-simplified"
   });
 });
+// Store active streaming requests
+// Create a shared activeStreams map
+const sharedActiveStreams = new Map<string, AbortController>();
 
+// Update the route initialization (only the design route needs the shared streams)
+
+
+// Update the stop endpoint to use the shared streams
+app.post("/api/generate/stop/:projectId", (req: Request, res: Response) => {
+  const { projectId } = req.params;
+  
+  if (sharedActiveStreams.has(projectId)) {
+    const controller = sharedActiveStreams.get(projectId);
+    controller?.abort();
+    sharedActiveStreams.delete(projectId);
+    
+    console.log(`🛑 Generation stopped for project ${projectId}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Generation stopped successfully',
+      projectId 
+    });
+  } else {
+    res.status(404).json({ 
+      success: false, 
+      error: 'No active generation found for this project',
+      availableStreams: Array.from(sharedActiveStreams.keys()) // Debug info
+    });
+  }
+});
 // Main API routes - these are used by the frontend
 app.use("/api/users", userRoutes);
 app.use("/api/projects", projectRoutes);
@@ -109,7 +140,7 @@ app.use("/api/messages", messageRoutes);
 
 app.use("/api/generate", initializeGenerationRoutes(anthropic, messageDB, sessionManager));
 app.use("/api/modify", initializeModificationRoutes(anthropic, messageDB, redis, sessionManager));
-app.use("/api/design", initializeAgentRoutes(anthropic, messageDB, sessionManager));
+app.use("/api/design", initializeAgentRoutes(anthropic, messageDB, sessionManager, sharedActiveStreams));
 
 
 // Cleanup function for temp directories

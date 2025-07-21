@@ -818,6 +818,17 @@ You are an expert React/TypeScript modification analyzer. Your job is to determi
         temperature: 0.1,
         messages: [{ role: 'user', content: analysisPrompt }],
       });
+      console.log('📊 Token Usage:', {
+  inputTokens: response.usage.input_tokens,
+  outputTokens: response.usage.output_tokens,
+  totalTokens: response.usage.input_tokens + response.usage.output_tokens,
+  model: 'claude-3-5-sonnet-20240620'
+});
+
+// More detailed logging
+console.log(`🔤 Input tokens: ${response.usage.input_tokens}`);
+console.log(`📝 Output tokens: ${response.usage.output_tokens}`);
+console.log(`💰 Total tokens: ${response.usage.input_tokens + response.usage.output_tokens}`);
 
       this.tokenTracker.logUsage(response.usage, 'Comprehensive Scope Analysis');
 

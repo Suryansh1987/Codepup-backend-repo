@@ -2261,6 +2261,192 @@ export class ClaudeFunctionService {
 
     return this.handleFunctionCall(reconstructedMessage, userId);
   }
+  // Add this method to your ClaudeFunctionService class
+// Add this method to your ClaudeFunctionService class
+// Fixed generateFrontendFilesRaw method in your ClaudeFunctionService
+
+async generateFrontendFilesRaw(
+  designChoices: any,
+  fileStructure: any,
+  backendFiles: any,
+  userId: string,
+  tailwindConfig?: string,
+  indexCss?: string,
+  streamCallback?: (chunk: string) => void,
+  abortSignal?: AbortSignal
+): Promise<any> {
+  
+  const frontendPrompt = `
+  Generate a complete React frontend application based on:
+  
+  DESIGN CHOICES:
+  ${JSON.stringify(designChoices, null, 2)}
+
+  TAILWIND CONFIG(tailwind.config.ts):
+  ${JSON.stringify(tailwindConfig, null, 2)}
+
+  INDEX CSS(src/index.css):
+  ${JSON.stringify(indexCss, null, 2)}
+
+  BACKEND SCHEMA (from migration):
+  ${
+    backendFiles["supabase/migrations/001_initial_schema.sql"]
+      ? "Available - use this for database operations"
+      : "Not available"
+  }
+  
+  EXACT FILES TO CREATE (from structure plan):
+  ${JSON.stringify(fileStructure, null, 2)}
+  
+  Don't create files such as that are present in supabase folder, tailwind.config.ts and index.css, because we already have them.
+  
+  Generate a complete, working React frontend application using shadcn/ui components that integrates perfectly with the provided backend schema.
+  `;
+
+  try {
+    // Get current config for logging
+    const currentConfig = this.getCurrentConfig();
+    
+    // IMPORTANT: Don't pass signal to stream config - handle it manually
+    const streamConfig = {
+      model: "claude-sonnet-4-0" as const,
+      max_tokens: 64000,
+      temperature: 0.1,
+      system: `You are the Frontend Generator Agent. Generate a complete React application that works with the provided backend.
+      
+      CRITICAL RULES:
+      - Use REFERENCE AuthContext implementation
+      - Landing page fetches real data from database
+      - Admin dashboard uses SEPARATE queries, NO complex joins
+      - VITE_ prefix for all environment variables
+      - Only approved Lucide React icons
+      - Complete CRUD operations for ALL business tables
+      - Working edit buttons with onClick handlers
+      - Proper error handling and loading states
+      
+      Generate complete, functional code without placeholders.`,
+      messages: [{ role: "user" as const, content: frontendPrompt }],
+    };
+
+    // Create the stream WITHOUT the signal
+    const stream = await this.client.messages.stream(streamConfig);
+
+    let accumulatedContent = "";
+    let usage = { input_tokens: 0, output_tokens: 0 };
+    let stopReason = "";
+
+    // PROPER ABORT HANDLING: Check the signal in the loop
+    for await (const messageStreamEvent of stream) {
+      // Check if aborted before processing each chunk
+      if (abortSignal?.aborted) {
+        console.log('🛑 Stream aborted during generation - breaking loop');
+        // Don't throw error here, just break and return aborted response
+        break;
+      }
+
+      switch (messageStreamEvent.type) {
+        case "message_start":
+          usage = messageStreamEvent.message.usage;
+          break;
+
+        case "content_block_delta":
+          if (messageStreamEvent.delta.type === "text_delta") {
+            const chunk = messageStreamEvent.delta.text;
+            accumulatedContent += chunk;
+            
+            // Call the streaming callback if provided
+            if (streamCallback) {
+              streamCallback(chunk);
+            }
+          }
+          break;
+
+        case "message_delta":
+          if (messageStreamEvent.delta.stop_reason) {
+            stopReason = messageStreamEvent.delta.stop_reason;
+          }
+          break;
+
+        case "message_stop":
+          console.log("✅ Frontend generation stream completed");
+          break;
+      }
+    }
+
+    // Check if we were aborted
+    if (abortSignal?.aborted) {
+      console.log('🛑 Frontend generation was aborted by user');
+      return {
+        success: false,
+        error: 'Generation was aborted by user',
+        content: null,
+        provider: currentConfig.provider,
+        model: currentConfig.model,
+        stop_reason: "aborted",
+        inputTokens: usage?.input_tokens || 0,
+        tokenused: usage?.output_tokens || 0
+      };
+    }
+
+    const finalMessage = await stream.finalMessage();
+    
+    return {
+      success: true,
+      content: [{ type: "text", text: accumulatedContent }],
+      provider: currentConfig.provider,
+      model: currentConfig.model,
+      stop_reason: stopReason,
+      inputTokens: usage.input_tokens,
+      tokenused: usage.output_tokens,
+      usage: usage
+    };
+
+  } catch (error) {
+    // Check if error was due to abortion
+    //@ts-ignore
+    if (abortSignal?.aborted || error.message?.includes('aborted')) {
+      console.log('🛑 Frontend generation was aborted (caught in error)');
+      return {
+        success: false,
+        error: 'Generation was aborted by user',
+        content: null,
+        provider: "anthropic",
+        model: "claude-sonnet-4-0",
+        stop_reason: "aborted",
+        inputTokens: 0,
+        tokenused: 0
+      };
+    }
+
+    console.error("❌ Frontend generation failed:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+      content: null,
+      provider: "anthropic",
+      model: "claude-sonnet-4-0",
+      stop_reason: "error",
+      inputTokens: 0,
+      tokenused: 0
+    };
+  }
+}
+
+// Alternative approach using a more aggressive abort handling:
+// If the above doesn't work well, you can also try this approach:
+
+
+
+
+// Also add this helper method if it doesn't exist
+getCurrentConfig() {
+  return {
+    provider: "anthropic",
+    model: "claude-sonnet-4-0"
+  };
+}
+
+
   // Handle function call responses
   private async handleFunctionCall(message: any, userId: string) {
     const response: any = {

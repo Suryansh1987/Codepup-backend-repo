@@ -110,4 +110,58 @@ export class ConversationService {
       .where(eq(conversationMessages.conversationId, conversation.id))
       .orderBy(conversationMessages.createdAt);
   }
+
+  // ADD THESE MISSING METHODS:
+
+  // Update conversation with LLM information
+  async updateConversationWithLLMInfo(
+    projectId: number,
+    updates: {
+      currentStep?: string;
+      designChoices?: any;
+      generatedFiles?: any;
+      llmProvider?: string;
+      llmModel?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+    }
+  ) {
+    const [updated] = await db
+      .update(conversations)
+      .set({
+        ...updates,
+        updatedAt: new Date(),
+      })
+      .where(eq(conversations.projectId, projectId))
+      .returning();
+
+    return updated;
+  }
+
+  // Save message with LLM information
+  async saveMessageWithLLMInfo(
+    projectId: number,
+    data: {
+      userMessage?: string;
+      agentResponse?: string;
+      functionCalled?: string;
+      llmProvider?: string;
+      llmModel?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+    }
+  ) {
+    const conversation = await this.getConversationByProject(projectId);
+    if (!conversation) throw new Error("Conversation not found for project");
+
+    const [message] = await db
+      .insert(conversationMessages)
+      .values({
+        conversationId: conversation.id,
+        ...data,
+      })
+      .returning();
+
+    return message;
+  }
 }
