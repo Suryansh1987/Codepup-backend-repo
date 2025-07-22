@@ -27,6 +27,7 @@ import { ProjectAnalyzer } from './processor/projectanalyzer';
 import { FullFileProcessor } from './processor/Fullfileprocessor';
 import { TokenTracker } from '../utils/TokenTracer';
 import { RedisService } from './Redis';
+import { ConversationService } from '../services/conversation-service';
 
 interface HybridProcessingResult {
   success: boolean;
@@ -78,7 +79,7 @@ export class EnhancedUnrestrictedIntelligentFileModifier {
   private fullFileProcessor: FullFileProcessor;
   private tokenTracker: TokenTracker;
 
-  constructor(anthropic: Anthropic, reactBasePath: string, sessionId: string, redisUrl?: string, messageDB?: any) {
+  constructor(anthropic: Anthropic, reactBasePath: string, sessionId: string, redisUrl?: string, messageDB?: any, conversationService?: ConversationService) {
     console.log('[DEBUG] Enhanced FileModifier constructor starting...');
     console.log(`[DEBUG] reactBasePath: ${reactBasePath}`);
     
@@ -114,11 +115,20 @@ export class EnhancedUnrestrictedIntelligentFileModifier {
     console.log('[DEBUG] FullFileProcessor initialized');
     
     console.log('[DEBUG] About to initialize TailwindChangeProcessor...');
-    this.tailwindChangeProcessor = new TailwindChangeProcessor(
-      anthropic,
-      reactBasePath
-    );
-    console.log('[DEBUG] TailwindChangeProcessor initialized');
+    
+    // Only initialize TailwindChangeProcessor if conversationService is provided
+    if (conversationService) {
+      this.tailwindChangeProcessor = new TailwindChangeProcessor(
+        anthropic,
+        reactBasePath,
+        conversationService
+      );
+      console.log('[DEBUG] TailwindChangeProcessor initialized');
+    } else {
+      console.log('[DEBUG] TailwindChangeProcessor not initialized - no conversationService provided');
+      // Create a placeholder that will throw if used
+      this.tailwindChangeProcessor = null as any;
+    }
    
     this.textBasedProcessor = new EnhancedLLMRipgrepProcessor(
       reactBasePath,
@@ -371,8 +381,8 @@ ${recentChanges.map(change => {
         projectFiles,
         this.reactBasePath,
         (message: string) => this.streamUpdate(message),
-        treeInformation,  // NEW: Pass tree info from ScopeAnalyzer
-        targetNodes       // NEW: Pass target nodes from ScopeAnalyzer
+        treeInformation,  
+        targetNodes      
       );
 
       // Update project files cache if successful
@@ -511,15 +521,40 @@ ${recentChanges.map(change => {
   }
 
   // ============================================================================
-  // OTHER HANDLERS (unchanged - TAILWIND, COMPONENT, FULL_FILE)
+  // TAILWIND HANDLER (FIXED)
   // ============================================================================
 
   private async handleTailwindChange(
     prompt: string,
-    scope: ModificationScope
+    scope: ModificationScope,
+    projectId?: number
   ): Promise<ModificationResult> {
     
     this.streamUpdate(`🎨 TAILWIND_CHANGE: Starting Tailwind configuration modification...`);
+    
+    // Check if TailwindChangeProcessor is available
+    if (!this.tailwindChangeProcessor) {
+      return {
+        success: false,
+        error: 'TailwindChangeProcessor not available - ConversationService not provided',
+        selectedFiles: [],
+        addedFiles: [],
+        approach: 'TAILWIND_CHANGE',
+        reasoning: 'TailwindChangeProcessor requires ConversationService for design system integration'
+      };
+    }
+
+    // Check if projectId is provided for design system access
+    if (!projectId) {
+      return {
+        success: false,
+        error: 'ProjectId required for Tailwind changes with design system integration',
+        selectedFiles: [],
+        addedFiles: [],
+        approach: 'TAILWIND_CHANGE',
+        reasoning: 'ProjectId is required to access design system files'
+      };
+    }
     
     try {
       const projectFiles = await this.getProjectFiles();
@@ -542,7 +577,8 @@ ${recentChanges.map(change => {
         prompt,
         scope,
         projectFiles,
-        modificationSummary as any
+        modificationSummary as any,
+        projectId
       );
 
       if (result.success) {
@@ -564,6 +600,10 @@ ${recentChanges.map(change => {
       };
     }
   }
+
+  // ============================================================================
+  // COMPONENT ADDITION HANDLER (unchanged)
+  // ============================================================================
 
   async handleComponentAddition(
     prompt: string,
@@ -664,6 +704,10 @@ ${recentChanges.map(change => {
       return await this.createComponentEmergency(prompt);
     }
   }
+
+  // ============================================================================
+  // FULL FILE HANDLER (unchanged)
+  // ============================================================================
 
   private async handleFullFileModification(prompt: string): Promise<boolean> {
     const projectFiles = await this.getProjectFiles();
@@ -885,7 +929,7 @@ ${recentChanges.map(change => {
             console.log('[DEBUG] About to call handleTailwindChange()');
             
             try {
-              modificationResult = await this.handleTailwindChange(prompt, scope);
+              modificationResult = await this.handleTailwindChange(prompt, scope, projectId);
               console.log(`[DEBUG] handleTailwindChange() completed with success: ${modificationResult.success}`);
               return modificationResult;
             } catch (tailwindError) {

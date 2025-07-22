@@ -102,8 +102,7 @@ export function initializeModificationRoutes(
       userId: providedUserId,
       currentUrl,
       deployedUrl,
-      projectId: requestedProjectId,
-      projectStructure, // NEW: Accept project structure from frontend
+      projectId: requestedProjectId,// NEW: Accept project structure from frontend
       clerkId, // NEW: Accept clerkId for user resolution
     } = req.body;
 
@@ -120,7 +119,6 @@ export function initializeModificationRoutes(
 
     console.log(`[${buildId}] 🚀 Starting modification with enhanced project structure support`);
     console.log(`[${buildId}] RequestedProjectId: ${requestedProjectId}`);
-    console.log(`[${buildId}] Has projectStructure: ${!!projectStructure}`);
     console.log(`[${buildId}] ClerkId: ${clerkId || 'not provided'}`);
 
     // Get project secrets
@@ -262,11 +260,12 @@ export function initializeModificationRoutes(
         buildId,
         sessionId,
       });
+    const projectStructure: string | null = await messageDB.getProjectStructure(requestedProjectId);
 
       // Enhanced processModification with project structure
       const result = await fileModifier.processModification(
         prompt,
-        projectStructure, // Pass the project structure from frontend
+        projectStructure?? undefined, // Pass the project structure from frontend
         currentProject?.description || "Project modification",
         resolvedProjectId || requestedProjectId, // Pass projectId for enhanced structure retrieval
         async () => null // No summary saving for simplicity
@@ -326,8 +325,11 @@ export function initializeModificationRoutes(
 
           const urls = JSON.parse(DistUrl);
           const builtZipUrl = urls.downloadUrl;
+// Updated section in routes/modification.ts - Fixed order and description handling
 
-          sendEvent("progress", {
+// After build is complete and before cleanup:
+
+sendEvent("progress", {
             step: 7,
             total: 10,
             message: "Deploying enhanced project...",
@@ -337,28 +339,47 @@ export function initializeModificationRoutes(
 
           //@ts-ignore
           const previewUrl = await runBuildAndDeploy(builtZipUrl, buildId);
-try {
-  sendEvent('progress', { step: 14, total: 17, message: 'Generating project structure mapping...', buildId, sessionId });
-  
-  const projectMappingJson = await generateProjectMappingString(tempBuildDir);
-  const mappingSuccess = await messageDB.updateProjectMapping(requestedProjectId , projectMappingJson);
-  
-  if (mappingSuccess) {
-    console.log(`✅ [${buildId}] Project structure mapping saved successfully`);
-    sendEvent('progress', { step: 15, total: 17, message: '📊 Project structure mapped and saved!', buildId, sessionId });
-  }
-} catch (mappingError) {
-  console.error(`❌ [${buildId}] Error generating project mapping:`, mappingError);
-}
+
+          // STEP 1: Generate and save project structure mapping FIRST
           sendEvent("progress", {
             step: 8,
             total: 10,
-            message: "Updating project with enhanced structure...",
+            message: "Generating project structure mapping...",
             buildId,
             sessionId,
           });
 
-          // Update project URLs if we have a project
+          try {
+            const projectMappingJson = await generateProjectMappingString(tempBuildDir);
+            const mappingSuccess = await messageDB.updateProjectMapping(
+              resolvedProjectId || requestedProjectId, 
+              projectMappingJson
+            );
+            
+            if (mappingSuccess) {
+              console.log(`✅ [${buildId}] Project structure mapping saved to description field`);
+              sendEvent("progress", {
+                step: 8.5,
+                total: 10,
+                message: "📊 Project structure mapped and saved!",
+                buildId,
+                sessionId,
+              });
+            }
+          } catch (mappingError) {
+            console.error(`❌ [${buildId}] Error generating project mapping:`, mappingError);
+            // Don't fail the entire process if mapping fails
+          }
+
+          // STEP 2: Update project URLs WITHOUT touching description
+          sendEvent("progress", {
+            step: 9,
+            total: 10,
+            message: "Updating project URLs...",
+            buildId,
+            sessionId,
+          });
+
           if (resolvedProjectId) {
             try {
               await urlManager.saveNewProjectUrls(
@@ -372,20 +393,19 @@ try {
                 userId,
                 {
                   name: currentProject?.name,
-                  // Keep existing description - DON'T update during modification
-                  description: currentProject?.description,
+                  // DO NOT PASS description here - it will preserve the structure mapping
                   framework: currentProject?.framework || "react",
                   template: currentProject?.template || "vite-react-ts",
                 }
               );
-              console.log(`[${buildId}] ✅ Updated project ${resolvedProjectId} with enhanced structure (description preserved)`);
+              console.log(`[${buildId}] ✅ Updated project ${resolvedProjectId} URLs (structure mapping preserved)`);
             } catch (updateError) {
-              console.error(`[${buildId}] ❌ Failed to update project:`, updateError);
+              console.error(`[${buildId}] ❌ Failed to update project URLs:`, updateError);
             }
           }
 
           sendEvent("progress", {
-            step: 9,
+            step: 10,
             total: 10,
             message: "Cleaning up...",
             buildId,
@@ -430,10 +450,10 @@ sendEvent('progress', { step: 17, total: 17, message: `🎉 Live at: ${previewUr
               projectId: resolvedProjectId,
               projectName: currentProject?.name,
               projectMatchReason: matchReason,
-              hasProjectStructure: !!projectStructure,
+              hasProjectStructure: true, // We just saved it
               enhancedFeatures: [
                 "Project structure analysis",
-                "Component-aware modifications",
+                "Component-aware modifications", 
                 "Intelligent file selection",
                 "Enhanced context understanding"
               ]
