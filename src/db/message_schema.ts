@@ -72,7 +72,8 @@ export const conversations = pgTable("conversations", {
       onDelete: "cascade",
     })
     .notNull()
-    .unique(), 
+    .unique(),
+
   userId: integer("user_id")
     .references(() => users.id, {
       onDelete: "cascade",
@@ -83,6 +84,16 @@ export const conversations = pgTable("conversations", {
   currentStep: varchar("current_step", { length: 50 }).default("analysis"),
   designChoices: jsonb("design_choices"),
   generatedFiles: jsonb("generated_files"),
+
+  // LLM Provider Information - NEW FIELDS
+  llmProvider: varchar("llm_provider", { length: 20 }).default("claude"), // 'claude' or 'openai'
+  llmModel: varchar("llm_model", { length: 50 }).default(
+    "claude-sonnet-4-20250514"
+  ),
+
+  // Token usage tracking - NEW FIELDS
+  totalInputTokens: integer("total_input_tokens").default(0),
+  totalOutputTokens: integer("total_output_tokens").default(0),
 
   // Session information
   sessionId: text("session_id"),
@@ -108,15 +119,27 @@ export const conversationMessages = pgTable("conversation_messages", {
   messageType: varchar("message_type", { length: 20 })
     .notNull()
     .$type<"user" | "assistant" | "system">()
-    .default("user"), // Add default to make it not strictly required
-  
+    .default("user"),
+
   // Optional metadata
   functionCalled: varchar("function_called", { length: 100 }),
   metadata: jsonb("metadata"),
 
+  // LLM Provider Information for this specific message - NEW FIELDS
+  llmProvider: varchar("llm_provider", { length: 20 }),
+  llmModel: varchar("llm_model", { length: 50 }),
+
+  // Token usage for this specific message - NEW FIELDS
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+
+  // Processing time tracking - NEW FIELDS
+  processingTimeMs: integer("processing_time_ms"),
+
   // Timestamps
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+// ============================================================================
 
 // ============================================================================
 // RELATIONS
@@ -138,17 +161,20 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   }),
 }));
 
-export const conversationsRelations = relations(conversations, ({ one, many }) => ({
-  project: one(projects, {
-    fields: [conversations.projectId],
-    references: [projects.id],
-  }),
-  user: one(users, {
-    fields: [conversations.userId],
-    references: [users.id],
-  }),
-  messages: many(conversationMessages),
-}));
+export const conversationsRelations = relations(
+  conversations,
+  ({ one, many }) => ({
+    project: one(projects, {
+      fields: [conversations.projectId],
+      references: [projects.id],
+    }),
+    user: one(users, {
+      fields: [conversations.userId],
+      references: [users.id],
+    }),
+    messages: many(conversationMessages),
+  })
+);
 
 export const conversationMessagesRelations = relations(
   conversationMessages,
