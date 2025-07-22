@@ -1,4 +1,4 @@
-// Simplified Enhanced Project URL Manager - Updated for 4-table schema
+// Enhanced Project URL Manager - Fixed to preserve structure mapping in description
 import { DrizzleMessageHistoryDB } from "../db/messagesummary";
 
 export class EnhancedProjectUrlManager {
@@ -43,6 +43,21 @@ export class EnhancedProjectUrlManager {
     }
   }
 
+  /**
+   * Helper method to detect if a string contains project structure mapping JSON
+   */
+  private isStructureMappingJson(text: string): boolean {
+    if (!text || typeof text !== 'string') return false;
+    
+    try {
+      const parsed = JSON.parse(text);
+      // Check if it contains structure mapping properties
+      return !!(parsed.structure && parsed.summary && (parsed.validation || parsed.files));
+    } catch {
+      return false;
+    }
+  }
+
   async saveNewProjectUrls(
     sessionId: string,
     projectId: number,
@@ -74,23 +89,55 @@ export class EnhancedProjectUrlManager {
           status: existingProject.status,
         });
 
-        // Update only the existing record
+        // Check if existing description contains structure mapping
+        const hasStructureMapping = this.isStructureMappingJson(existingProject.description || '');
+        console.log(`🔍 [DEBUG] Existing project has structure mapping: ${hasStructureMapping}`);
+
+        // Prepare update data - CRITICAL: Handle description carefully
+        const updateData: any = {
+          deploymentUrl: urls.deploymentUrl,
+          downloadUrl: urls.downloadUrl,
+          zipUrl: urls.zipUrl,
+          lastSessionId: sessionId,
+          lastMessageAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        // Update name, framework, template if provided
+        if (projectData.name) {
+          updateData.name = projectData.name;
+        }
+        if (projectData.framework) {
+          updateData.framework = projectData.framework;
+        }
+        if (projectData.template) {
+          updateData.template = projectData.template;
+        }
+
+        // CRITICAL: Only update description if ALL these conditions are met:
+        // 1. New description is provided
+        // 2. New description is not empty/null
+        // 3. Existing description is NOT a structure mapping
+        // 4. OR new description is also a structure mapping (explicit update)
+        if (projectData.description) {
+          const newDescriptionIsMapping = this.isStructureMappingJson(projectData.description);
+          
+          if (!hasStructureMapping || newDescriptionIsMapping) {
+            // Safe to update description
+            updateData.description = projectData.description;
+            console.log(`📝 [DEBUG] Updating description (hasMapping: ${hasStructureMapping}, newIsMapping: ${newDescriptionIsMapping})`);
+          } else {
+            // Preserve existing structure mapping
+            console.log(`🔒 [DEBUG] Preserving existing structure mapping in description`);
+            // Don't include description in updateData - it will be preserved
+          }
+        } else {
+          console.log(`🔒 [DEBUG] No new description provided - preserving existing`);
+          // Don't include description in updateData - it will be preserved
+        }
+
         console.log(`🔄 [DEBUG] Updating existing project ${existingProject.id}...`);
-    await this.messageDB.updateProject(existingProject.id, {
-  deploymentUrl: urls.deploymentUrl,
-  downloadUrl: urls.downloadUrl,
-  zipUrl: urls.zipUrl,
-  lastSessionId: sessionId,
-  name: projectData.name ?? existingProject.name ?? undefined,
-  description: projectData.description ?? existingProject.description ?? undefined,
-  framework: projectData.framework ?? existingProject.framework ?? undefined,
-  template: projectData.template ?? existingProject.template ?? undefined,
-  lastMessageAt: new Date(),
-  updatedAt: new Date(),
-});
-
-
-
+        await this.messageDB.updateProject(existingProject.id, updateData);
 
         console.log(`✅ [DEBUG] Successfully updated project ${existingProject.id}`);
         return existingProject.id;
